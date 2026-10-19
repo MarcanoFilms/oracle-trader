@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <title>Oracle Trader</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-name">ORACLE&nbsp;TRADER</span>
+      <span class="brand-sub">fleet desk</span>
+    </div>
+    <div class="pairbox">
+      <select id="exchangeSel" title="Exchange"></select>
+      <select id="pairSel" title="Par"></select>
+    </div>
+    <div id="tickerStrip">
+      <div class="tk big"><span class="tk-label">último</span><span id="tkLast" class="tk-val">—</span></div>
+      <div class="tk"><span class="tk-label">24h</span><span id="tkChange" class="tk-val">—</span></div>
+      <div class="tk"><span class="tk-label">máx 24h</span><span id="tkHigh" class="tk-val">—</span></div>
+      <div class="tk"><span class="tk-label">mín 24h</span><span id="tkLow" class="tk-val">—</span></div>
+      <div class="tk"><span class="tk-label">vol 24h</span><span id="tkVol" class="tk-val">—</span></div>
+      <div class="tk"><span class="tk-label">spread</span><span id="tkSpread" class="tk-val">—</span></div>
+      <div class="tk"><span class="tk-label">trades 24h</span><span id="tkTrades" class="tk-val">—</span></div>
+    </div>
+    <div id="connDot" class="conn" title="Conexión con el exchange"></div>
+    <div id="clock">—</div>
+  </header>
+
+  <div id="main">
+    <!-- ══════════ FLOTA ══════════ -->
+    <aside id="sidebar">
+      <div class="side-head">
+        <h3>FLOTA</h3>
+        <div id="fleetTotals" class="fleet-totals"></div>
+      </div>
+      <div id="fleetList"></div>
+    </aside>
+
+    <!-- ══════════ CENTRO: GRÁFICO + PANEL ══════════ -->
+    <section id="center">
+      <div id="chartToolbar">
+        <div id="tfBar" class="tf-bar"></div>
+        <div class="tb-sep"></div>
+        <div class="dropdown" id="indDropdown">
+          <button class="tb-btn" id="indBtn">Indicadores ▾</button>
+          <div class="dropdown-menu" id="indMenu"></div>
+        </div>
+        <div class="tb-sep"></div>
+        <label class="tb-toggle"><input type="checkbox" id="ovLadder" checked /> Escalera</label>
+        <label class="tb-toggle"><input type="checkbox" id="ovLots" checked /> Lotes</label>
+        <label class="tb-toggle"><input type="checkbox" id="ovTrades" checked /> Trades bot</label>
+        <div class="tb-spacer"></div>
+        <span id="chartStatus" class="chart-status"></span>
+      </div>
+      <div id="chartArea">
+        <div id="drawbar"></div>
+        <div id="chart"></div>
+      </div>
+      <div id="bottomPanel">
+        <div id="tabsBar">
+          <div class="tabs" id="tabs"></div>
+          <div id="tabAccount" class="tab-account"></div>
+        </div>
+        <div id="tabContent"><div class="empty-hint">Selecciona una cuenta de la flota para ver su detalle</div></div>
+      </div>
+    </section>
+
+    <!-- ══════════ MERCADO ══════════ -->
+    <aside id="rightbar">
+      <div class="panel" id="obPanel">
+        <div class="panel-title">LIBRO DE ÓRDENES <span id="obPool" class="pool-tag"></span></div>
+        <div id="obAsks" class="ob-side"></div>
+        <div id="obSpread" class="ob-spread">—</div>
+        <div id="obBids" class="ob-side"></div>
+      </div>
+      <div class="panel" id="mtPanel">
+        <div class="panel-title">TRADES DEL MERCADO</div>
+        <div id="mtList"></div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- modal de confirmación -->
+  <div id="modalBack" class="modal-back hidden">
+    <div class="modal">
+      <div id="modalTitle" class="modal-title"></div>
+      <div id="modalBody" class="modal-body"></div>
+      <div class="modal-actions">
+        <button id="modalCancel" class="btn">Cancelar</button>
+        <button id="modalOk" class="btn btn-danger">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="vendor/klinecharts.min.js"></script>
+  <script src="chart.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
