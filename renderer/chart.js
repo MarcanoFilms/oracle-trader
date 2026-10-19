@@ -373,13 +373,28 @@ const Chart = (() => {
     }
   }
 
-  // períodos y colores personalizados (editor de indicadores)
+  // períodos y colores personalizados (editor de indicadores).
+  // OJO: styles.lines del override REEMPLAZA el array de estilos por defecto
+  // (formatValue no mergea arrays) — cada línea debe ir COMPLETA (style/size/
+  // smooth/dashedValue) y acolchada a ≥5 entradas, o el pintado del panel
+  // lanza y el canvas de velas se congela.
   function applyIndicatorConfig(name, cfg) {
     const paneId = indicatorPanes.get(name);
     if (!paneId) return;
     const override = { name };
     if (cfg.calcParams?.length) override.calcParams = cfg.calcParams;
-    if (cfg.colors?.length) override.styles = { lines: cfg.colors.map(c => ({ color: c })) };
+    if (cfg.colors?.length) {
+      const n = Math.max(cfg.colors.length, 5);
+      override.styles = {
+        lines: Array.from({ length: n }, (_, i) => ({
+          style: 'solid',
+          smooth: false,
+          size: 1,
+          dashedValue: [2, 2],
+          color: cfg.colors[i % cfg.colors.length],
+        })),
+      };
+    }
     chart.overrideIndicator(override, paneId);
   }
 

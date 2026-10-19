@@ -40,6 +40,27 @@ function createWindow() {
     }
   });
 
+  // hooks de verificación headless: volcar consola del renderer + inyectar JS
+  if (process.env.ORACLE_SHOT) {
+    win.webContents.on('console-message', (...args) => {
+      const d = args[1];
+      if (d && typeof d === 'object' && 'message' in d) {
+        console.log(`[renderer:${d.level}] ${d.message}`);
+      } else {
+        console.log(`[renderer:${args[1]}] ${args[2]}`);
+      }
+    });
+  }
+  if (process.env.ORACLE_EVAL) {
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        win.webContents.executeJavaScript(process.env.ORACLE_EVAL)
+          .then(r => console.log('eval →', r))
+          .catch(e => console.log('eval ERROR →', e.message));
+      }, Number(process.env.ORACLE_EVAL_DELAY || 8000));
+    });
+  }
+
   // modo captura para verificación headless: ORACLE_SHOT=/ruta.png
   if (process.env.ORACLE_SHOT) {
     win.webContents.once('did-finish-load', () => {
