@@ -52,6 +52,7 @@ marketTrades(pair, limit) · balances() · openOrders()
 
 Pendiente / ideas (algunas inspiradas en OctoBot):
 
+- [x] ~~Historia profunda en el gráfico~~ — fusiona el archivo [xbt-market-data](https://github.com/MarcanoFilms/xbt-market-data) con la ventana live de la API (1d/4h desde el génesis del mercado).
 - [ ] Adaptador **nonkyc.io** (misma familia de API que neoxa) y genérico vía **ccxt** para exchanges grandes.
 - [ ] Registro de cuentas con exchange+par+credenciales arbitrarios (hoy la flota se descubre del directorio del bot de neoxa).
 - [ ] Curva de equity / residuo acumulado por cuenta (gráfico histórico).
