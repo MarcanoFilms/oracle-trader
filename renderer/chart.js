@@ -86,6 +86,15 @@ const Chart = (() => {
           upBorderColor: UP, downBorderColor: DOWN, noChangeBorderColor: '#888888',
           upWickColor: UP, downWickColor: DOWN, noChangeWickColor: '#888888',
         },
+        area: {
+          lineSize: 2,
+          lineColor: '#f7931a',
+          value: 'close',
+          backgroundColor: [
+            { offset: 0, color: 'rgba(247,147,26,0.01)' },
+            { offset: 1, color: 'rgba(247,147,26,0.14)' },
+          ],
+        },
         priceMark: {
           high: { color: '#8a93a6' },
           low: { color: '#8a93a6' },
@@ -156,21 +165,79 @@ const Chart = (() => {
     try { chart.setPriceVolumePrecision(p, 4); } catch { /* API vieja */ }
   }
 
+  // ───────── almacén de velas: crudas + derivadas (Heikin Ashi) ─────────
+  // el gráfico siempre se alimenta de displayBars(); las velas crudas se
+  // conservan para re-derivar al cambiar el tipo de gráfico
+  let rawBars = [];
+  let haBars = [];
+  let chartType = 'candles';   // candles | hollow | heikin | ohlc | area
+
+  function haFrom(b, prevHa) {
+    const haClose = (b.open + b.high + b.low + b.close) / 4;
+    const haOpen = prevHa ? (prevHa.open + prevHa.close) / 2 : (b.open + b.close) / 2;
+    return {
+      timestamp: b.timestamp,
+      open: haOpen,
+      close: haClose,
+      high: Math.max(b.high, haOpen, haClose),
+      low: Math.min(b.low, haOpen, haClose),
+      volume: b.volume,
+    };
+  }
+
+  function rebuildHa() {
+    haBars = [];
+    let prev = null;
+    for (const b of rawBars) {
+      prev = haFrom(b, prev);
+      haBars.push(prev);
+    }
+  }
+
+  function displayBars() { return chartType === 'heikin' ? haBars : rawBars; }
+
   function setData(bars) {
-    chart.applyNewData(bars);
+    rawBars = bars.slice();
+    rebuildHa();
+    chart.applyNewData(displayBars().slice());
     const last = bars[bars.length - 1];
     lastBarTs = last ? last.timestamp : 0;
     lastClose = last ? last.close : null;
   }
 
-  // merge incremental: actualiza la última vela o añade la nueva
+  // merge incremental: actualiza la última vela cruda o añade la nueva,
+  // re-deriva su Heikin Ashi y pinta según el tipo activo
   function updateBars(bars) {
     for (const b of bars) {
-      if (b.timestamp >= lastBarTs) {
-        chart.updateData(b);
-        lastBarTs = b.timestamp;
-        lastClose = b.close;
-      }
+      if (b.timestamp < lastBarTs) continue;
+      const i = rawBars.length - 1;
+      if (i >= 0 && rawBars[i].timestamp === b.timestamp) rawBars[i] = b;
+      else rawBars.push(b);
+      const j = rawBars.length - 1;
+      const hb = haFrom(b, j > 0 ? haBars[j - 1] : null);
+      if (haBars.length === j) haBars.push(hb); else haBars[j] = hb;
+      lastBarTs = b.timestamp;
+      lastClose = b.close;
+      chart.updateData(chartType === 'heikin' ? hb : b);
+    }
+  }
+
+  // tipo de gráfico (estilo TV): velas / huecas / Heikin Ashi / OHLC / línea
+  const KLINE_TYPE = {
+    candles: 'candle_solid',
+    hollow: 'candle_stroke',
+    heikin: 'candle_solid',
+    ohlc: 'ohlc',
+    area: 'area',
+  };
+
+  function setChartType(type) {
+    if (!KLINE_TYPE[type]) return;
+    chartType = type;
+    chart.setStyles({ candle: { type: KLINE_TYPE[type] } });
+    if (rawBars.length) {
+      if (type === 'heikin') rebuildHa();
+      chart.applyNewData(displayBars().slice());
     }
   }
 
@@ -285,16 +352,18 @@ const Chart = (() => {
   // ───────── indicadores ─────────
   const MAIN_PANE_INDICATORS = new Set(['MA', 'EMA', 'BOLL', 'SAR']);
 
-  function toggleIndicator(name, on) {
+  function toggleIndicator(name, on, cfg) {
     if (on) {
-      if (indicatorPanes.has(name)) return;
-      if (MAIN_PANE_INDICATORS.has(name)) {
-        chart.createIndicator(name, false, { id: 'candle_pane' });
-        indicatorPanes.set(name, 'candle_pane');
-      } else {
-        const paneId = chart.createIndicator(name, false, { height: 85, dragEnabled: true });
-        indicatorPanes.set(name, paneId);
+      if (!indicatorPanes.has(name)) {
+        if (MAIN_PANE_INDICATORS.has(name)) {
+          chart.createIndicator(name, false, { id: 'candle_pane' });
+          indicatorPanes.set(name, 'candle_pane');
+        } else {
+          const paneId = chart.createIndicator(name, false, { height: 85, dragEnabled: true });
+          indicatorPanes.set(name, paneId);
+        }
       }
+      if (cfg && (cfg.calcParams?.length || cfg.colors?.length)) applyIndicatorConfig(name, cfg);
     } else {
       const paneId = indicatorPanes.get(name);
       if (paneId) {
@@ -302,6 +371,16 @@ const Chart = (() => {
         indicatorPanes.delete(name);
       }
     }
+  }
+
+  // períodos y colores personalizados (editor de indicadores)
+  function applyIndicatorConfig(name, cfg) {
+    const paneId = indicatorPanes.get(name);
+    if (!paneId) return;
+    const override = { name };
+    if (cfg.calcParams?.length) override.calcParams = cfg.calcParams;
+    if (cfg.colors?.length) override.styles = { lines: cfg.colors.map(c => ({ color: c })) };
+    chart.overrideIndicator(override, paneId);
   }
 
   // ───────── mini-charts (modo 2×2) ─────────
@@ -338,6 +417,7 @@ const Chart = (() => {
 
   return {
     init, setData, updateBars, extendToNow, setPrecision, setBotOverlays, clearBot,
-    startDraw, restoreDrawings, clearDrawings, toggleIndicator, dataRange, createMini,
+    startDraw, restoreDrawings, clearDrawings, toggleIndicator, applyIndicatorConfig,
+    setChartType, dataRange, createMini,
   };
 })();

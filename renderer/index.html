@@ -47,6 +47,10 @@
       <div id="chartToolbar">
         <div id="tfBar" class="tf-bar"></div>
         <div class="tb-sep"></div>
+        <div class="dropdown" id="ctDropdown">
+          <button class="tb-btn" id="ctBtn">Velas ▾</button>
+          <div class="dropdown-menu" id="ctMenu"></div>
+        </div>
         <div class="dropdown" id="indDropdown">
           <button class="tb-btn" id="indBtn">Indicadores ▾</button>
           <div class="dropdown-menu" id="indMenu"></div>
@@ -113,6 +117,27 @@
       <div class="modal-actions">
         <button id="modalCancel" class="btn">Cancelar</button>
         <button id="modalOk" class="btn btn-danger">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- editor de indicadores -->
+  <div id="indEditorBack" class="modal-back hidden">
+    <div class="modal">
+      <div class="modal-title" id="ieTitle"></div>
+      <div class="ie-section">
+        <div class="ie-label">PERÍODOS</div>
+        <div id="ieParams" class="ie-row"></div>
+      </div>
+      <div class="ie-section">
+        <div class="ie-label">COLORES</div>
+        <div id="ieColors" class="ie-row"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="ieReset" title="Volver a los valores por defecto">Restaurar</button>
+        <span class="ie-spacer"></span>
+        <button class="btn" id="ieCancel">Cancelar</button>
+        <button class="btn btn-primary" id="ieApply">Aplicar</button>
       </div>
     </div>
   </div>

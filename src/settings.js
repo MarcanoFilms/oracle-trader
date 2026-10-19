@@ -13,6 +13,8 @@ const DEFAULTS = {
   exchange: 'neoxa',
   pair: 'BTCB2_BTC',
   interval: '15m',
+  chartType: 'candles',
+  indicators: { VOL: { on: true } },
   pollTickerMs: 4000,
   pollCandlesMs: 6000,
   pollFleetMs: 10000,

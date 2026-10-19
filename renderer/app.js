@@ -512,16 +512,120 @@ function buildTimeframes() {
     `<button class="tf-btn ${iv === S.interval ? 'active' : ''}" data-iv="${iv}">${iv}</button>`).join('');
 }
 
-const INDICATORS = [
-  ['precio', [['MA', 'Medias móviles'], ['EMA', 'EMA'], ['BOLL', 'Bollinger']]],
-  ['paneles', [['VOL', 'Volumen'], ['MACD', 'MACD'], ['RSI', 'RSI'], ['KDJ', 'KDJ']]],
+// ── indicadores: metadatos, menú y editor ──
+const PALETTE = ['#f7931a', '#935ebd', '#2196f3', '#e8b931', '#26a69a'];
+const IND_META = {
+  MA:   { label: 'Medias móviles', params: [5, 10, 30, 60], lines: 'perParam', variable: true },
+  EMA:  { label: 'EMA',            params: [6, 12, 20],     lines: 'perParam', variable: true },
+  BOLL: { label: 'Bollinger',      params: [20, 2],         lines: 3 },
+  VOL:  { label: 'Volumen',        params: [5, 10, 20],     lines: 'perParam', variable: true },
+  MACD: { label: 'MACD',           params: [12, 26, 9],     lines: 2 },
+  RSI:  { label: 'RSI',            params: [6, 12, 24],     lines: 'perParam', variable: true },
+  KDJ:  { label: 'KDJ',            params: [9, 3, 3],       lines: 3 },
+};
+const INDICATOR_GROUPS = [
+  ['precio', ['MA', 'EMA', 'BOLL']],
+  ['paneles', ['VOL', 'MACD', 'RSI', 'KDJ']],
 ];
+
+function fitColors(colors, n) {
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(colors[i] || PALETTE[i % PALETTE.length]);
+  return out;
+}
+
 function buildIndicatorMenu() {
-  $('#indMenu').innerHTML = INDICATORS.map(([group, items]) =>
+  $('#indMenu').innerHTML = INDICATOR_GROUPS.map(([group, names]) =>
     `<div class="ind-group">${group.toUpperCase()}</div>` +
-    items.map(([name, label]) => `
-      <label class="ind-item"><input type="checkbox" data-ind="${name}" ${name === 'VOL' ? 'checked' : ''}/> ${label}</label>`).join('')
+    names.map(name => `
+      <div class="ind-item">
+        <label><input type="checkbox" data-ind="${name}" ${S.indCfg[name]?.on ? 'checked' : ''}/> ${IND_META[name].label}</label>
+        <button class="ind-gear" data-gear="${name}" title="Configurar períodos y colores">⚙</button>
+      </div>`).join('')
   ).join('');
+}
+
+// ── editor de indicadores ──
+let ieName = null;
+
+function renderIeParams(params, meta) {
+  const canDel = meta.variable && params.length > 1;
+  $('#ieParams').innerHTML = params.map((p, i) => `
+    <span class="ie-param">
+      <input type="number" min="1" step="any" value="${p}" />
+      ${canDel ? `<button class="ie-del" data-del="${i}" title="Quitar período">✕</button>` : ''}
+    </span>`).join('') +
+    (meta.variable && params.length < 5
+      ? '<button class="ie-add" id="ieAdd" title="Añadir período">+</button>' : '');
+}
+
+function renderIeColors(colors) {
+  $('#ieColors').innerHTML = colors.map((c, i) =>
+    `<input type="color" value="${c}" title="línea ${i + 1}" />`).join('');
+}
+
+function ieReadParams() {
+  return [...document.querySelectorAll('#ieParams input[type=number]')]
+    .map(el => parseFloat(el.value)).filter(v => isFinite(v) && v > 0);
+}
+function ieReadColors() {
+  return [...document.querySelectorAll('#ieColors input[type=color]')].map(el => el.value);
+}
+
+function openIndicatorEditor(name) {
+  const meta = IND_META[name];
+  if (!meta) return;
+  ieName = name;
+  const cfg = S.indCfg[name] || {};
+  const params = (cfg.calcParams?.length ? cfg.calcParams : meta.params).slice();
+  const n = meta.lines === 'perParam' ? params.length : meta.lines;
+  $('#ieTitle').textContent = `⚙ ${name} — ${meta.label}`;
+  renderIeParams(params, meta);
+  renderIeColors(fitColors(cfg.colors || [], n));
+  $('#indEditorBack').classList.remove('hidden');
+}
+
+function ieApply() {
+  const meta = IND_META[ieName];
+  let params = ieReadParams();
+  if (!meta.variable) params = params.slice(0, meta.params.length);
+  if (!params.length) { toast('períodos inválidos', 'err'); return; }
+  S.indCfg[ieName] = { ...(S.indCfg[ieName] || {}), on: true, calcParams: params, colors: ieReadColors() };
+  api('settings:set', { indicators: S.indCfg });
+  Chart.toggleIndicator(ieName, true, S.indCfg[ieName]);
+  buildIndicatorMenu();
+  $('#indEditorBack').classList.add('hidden');
+  toast(`${ieName} actualizado`, 'ok', 1800);
+}
+
+function ieResetDefaults() {
+  const meta = IND_META[ieName];
+  renderIeParams(meta.params.slice(), meta);
+  renderIeColors(fitColors([], meta.lines === 'perParam' ? meta.params.length : meta.lines));
+}
+
+// ── tipo de gráfico (estilo TV) ──
+const CHART_TYPES = [
+  ['candles', 'Velas'],
+  ['hollow', 'Velas huecas'],
+  ['heikin', 'Heikin Ashi'],
+  ['ohlc', 'Barras OHLC'],
+  ['area', 'Línea'],
+];
+
+function buildChartTypeMenu() {
+  $('#ctMenu').innerHTML = CHART_TYPES.map(([id, label]) => `
+    <div class="ct-item ${id === S.chartType ? 'active' : ''}" data-ct="${id}">
+      <span class="ct-check">${id === S.chartType ? '✓' : ''}</span>${label}
+    </div>`).join('');
+  $('#ctBtn').textContent = (CHART_TYPES.find(c => c[0] === S.chartType)?.[1] || 'Velas') + ' ▾';
+}
+
+function applyChartType(type) {
+  S.chartType = type;
+  Chart.setChartType(type);
+  api('settings:set', { chartType: type });
+  buildChartTypeMenu();
 }
 
 const DRAW_TOOLS = [
@@ -716,13 +820,58 @@ function wireEvents() {
 
   $('#indBtn').addEventListener('click', e => {
     e.stopPropagation();
+    $('#ctDropdown').classList.remove('open');
     $('#indDropdown').classList.toggle('open');
   });
-  document.addEventListener('click', () => $('#indDropdown').classList.remove('open'));
-  $('#indMenu').addEventListener('click', e => e.stopPropagation());
+  $('#ctBtn').addEventListener('click', e => {
+    e.stopPropagation();
+    $('#indDropdown').classList.remove('open');
+    $('#ctDropdown').classList.toggle('open');
+  });
+  document.addEventListener('click', () => {
+    $('#indDropdown').classList.remove('open');
+    $('#ctDropdown').classList.remove('open');
+  });
+  $('#ctMenu').addEventListener('click', e => {
+    e.stopPropagation();
+    const it = e.target.closest('.ct-item');
+    if (it) { applyChartType(it.dataset.ct); $('#ctDropdown').classList.remove('open'); }
+  });
+  $('#indMenu').addEventListener('click', e => {
+    e.stopPropagation();
+    const g = e.target.closest('.ind-gear');
+    if (g) { $('#indDropdown').classList.remove('open'); openIndicatorEditor(g.dataset.gear); }
+  });
   $('#indMenu').addEventListener('change', e => {
     const ind = e.target.dataset.ind;
-    if (ind) Chart.toggleIndicator(ind, e.target.checked);
+    if (!ind) return;
+    S.indCfg[ind] = { ...(S.indCfg[ind] || {}), on: e.target.checked };
+    api('settings:set', { indicators: S.indCfg });
+    Chart.toggleIndicator(ind, e.target.checked, S.indCfg[ind]);
+  });
+
+  // editor de indicadores
+  $('#ieCancel').addEventListener('click', () => $('#indEditorBack').classList.add('hidden'));
+  $('#ieApply').addEventListener('click', ieApply);
+  $('#ieReset').addEventListener('click', ieResetDefaults);
+  $('#ieParams').addEventListener('click', e => {
+    const meta = IND_META[ieName];
+    if (!meta) return;
+    if (e.target.id === 'ieAdd') {
+      const params = ieReadParams();
+      const colors = ieReadColors();
+      params.push(Math.round((params[params.length - 1] || 10) * 2));
+      renderIeParams(params, meta);
+      if (meta.lines === 'perParam') renderIeColors(fitColors(colors, params.length));
+    } else if (e.target.dataset.del != null) {
+      const i = +e.target.dataset.del;
+      const params = ieReadParams();
+      const colors = ieReadColors();
+      params.splice(i, 1);
+      if (meta.lines === 'perParam') colors.splice(i, 1);
+      renderIeParams(params, meta);
+      renderIeColors(meta.lines === 'perParam' ? fitColors(colors, params.length) : colors);
+    }
   });
 
   $('#drawbar').addEventListener('click', e => {
@@ -753,7 +902,10 @@ function wireEvents() {
     const k = e.key.toLowerCase();
     if (k === 'f') toggleFullscreen();
     else if (k === 'g') setMultichart(!S.ui.multichart);
-    else if (e.key === 'Escape') document.body.classList.remove('fullscreen');
+    else if (e.key === 'Escape') {
+      document.body.classList.remove('fullscreen');
+      $('#indEditorBack').classList.add('hidden');
+    }
   });
 
   $('#pairSel').addEventListener('change', e => switchPair(e.target.value));
@@ -809,8 +961,17 @@ async function boot() {
   S.ui.cells = S.ui.cells || [];
 
   Chart.init('chart', onDrawingsChanged);
-  Chart.toggleIndicator('VOL', true);
+
+  // tipo de gráfico + indicadores guardados
+  S.chartType = S.settings.chartType || 'candles';
+  S.indCfg = S.settings.indicators || { VOL: { on: true } };
+  Chart.setChartType(S.chartType);
+  for (const [name, cfg] of Object.entries(S.indCfg)) {
+    if (cfg.on) Chart.toggleIndicator(name, true, cfg);
+  }
+
   buildTimeframes();
+  buildChartTypeMenu();
   buildIndicatorMenu();
   buildDrawbar();
   buildTabs();
