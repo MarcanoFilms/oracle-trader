@@ -10,6 +10,8 @@ const DRAWINGS_DIR = path.join(DIR, 'drawings');
 const DEFAULTS = {
   // raíz del proyecto del bot: la cuenta principal vive ahí, las demás en instances/
   botRoot: path.join(os.homedir(), 'Projects', 'neoxa-bot'),
+  // archivo histórico de velas (repo xbt-market-data); si no existe, solo API
+  archiveRoot: path.join(os.homedir(), 'Projects', 'xbt-market-data'),
   exchange: 'neoxa',
   pair: 'BTCB2_BTC',
   interval: '15m',

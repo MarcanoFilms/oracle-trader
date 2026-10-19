@@ -8,6 +8,7 @@ const path = require('path');
 const settings = require('./src/settings');
 const fleet = require('./src/fleet');
 const exchanges = require('./src/exchanges');
+const archive = require('./src/archive');
 
 let win = null;
 let tray = null;
@@ -138,8 +139,18 @@ ipcMain.handle('settings:get', () => settings.load());
 ipcMain.handle('settings:set', (_e, patch) => settings.save(patch));
 ipcMain.handle('exchanges:list', () => exchanges.list());
 
-ipcMain.handle('market:candles', (_e, { exchange, pair, interval, limit }) =>
-  publicAdapter(exchange).candles(pair, interval, limit));
+// velas: con useArchive, fusiona el histórico del repo xbt-market-data con la
+// ventana live de la API (la API pisa el solape; el archivo aporta lo profundo)
+ipcMain.handle('market:candles', async (_e, { exchange, pair, interval, limit, useArchive }) => {
+  const live = await publicAdapter(exchange).candles(pair, interval, Math.min(limit || 500, 1000));
+  if (!useArchive) return live;
+  const hist = archive.loadCandles(settings.load().archiveRoot, exchange, pair, interval, limit || 10000);
+  if (!hist.length) return live;
+  const map = new Map();
+  for (const b of hist) map.set(b.timestamp, b);
+  for (const b of live) map.set(b.timestamp, b);
+  return [...map.values()].sort((a, b) => a.timestamp - b.timestamp).slice(-(limit || 10000));
+});
 ipcMain.handle('market:ticker', (_e, { exchange, pair }) =>
   publicAdapter(exchange).ticker(pair));
 ipcMain.handle('market:orderbook', (_e, { exchange, pair, depth }) =>

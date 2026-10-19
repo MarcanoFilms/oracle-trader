@@ -65,6 +65,11 @@ function esc(s) {
 // el exchange solo emite velas en los períodos CON trades; para un eje de
 // tiempo real (estilo TV) se rellenan los huecos con velas planas (vol 0)
 const IV_MS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 86400e3 };
+// velas crudas a pedir cuando hay archivo histórico (en 1m/5m se acota la
+// profundidad para que el relleno de huecos no dispare el nº de barras)
+const ARCHIVE_LIMITS = { '1m': 15000, '5m': 10000, '15m': 8000, '1h': 6000, '4h': 4000, '1d': 2000 };
+const MAX_FILLED = 20000;   // tope de barras ya rellenadas en el gráfico
+
 function flatBar(prev, t) {
   return { timestamp: t, open: prev.close, high: prev.close, low: prev.close, close: prev.close, volume: 0 };
 }
@@ -73,7 +78,7 @@ function fillSeq(bars, ivMs) {
   const out = [bars[0]];
   for (let i = 1; i < bars.length; i++) {
     let prev = out[out.length - 1];
-    for (let t = prev.timestamp + ivMs; t < bars[i].timestamp && out.length < 6000; t += ivMs) {
+    for (let t = prev.timestamp + ivMs; t < bars[i].timestamp && out.length < 60000; t += ivMs) {
       out.push(flatBar(prev, t));
       prev = out[out.length - 1];
     }
@@ -113,16 +118,22 @@ async function loadCandles() {
   const token = ++S.loadToken;
   $('#chartStatus').textContent = 'cargando velas…';
   try {
-    const bars = await api('market:candles', { exchange: S.exchange, pair: S.pair, interval: S.interval, limit: 500 });
+    const bars = await api('market:candles', {
+      exchange: S.exchange, pair: S.pair, interval: S.interval,
+      limit: ARCHIVE_LIMITS[S.interval] || 500, useArchive: true,
+    });
     if (token !== S.loadToken) return;
-    const filled = fillSeq(bars, IV_MS[S.interval]).slice(-1500);
+    const filled = fillSeq(bars, IV_MS[S.interval]).slice(-MAX_FILLED);
     Chart.setData(filled);
     if (filled.length) {
       S.lastPrice = filled[filled.length - 1].close;
       Chart.setPrecision(precisionFor(S.lastPrice));
     }
     Chart.extendToNow(IV_MS[S.interval]);
-    $('#chartStatus').textContent = `${filled.length} velas · ${S.interval}`;
+    const from = filled.length
+      ? new Date(filled[0].timestamp).toLocaleDateString('es', { day: '2-digit', month: '2-digit', year: '2-digit' })
+      : '—';
+    $('#chartStatus').textContent = `${filled.length} velas desde ${from} · ${S.interval}`;
     refreshBotOverlays();
   } catch (e) {
     if (token === S.loadToken) $('#chartStatus').textContent = 'error: ' + e.message;
@@ -753,8 +764,11 @@ async function loadMini(i) {
   const mc = minis[i], cfg = S.ui.cells[i];
   if (!mc || !cfg) return;
   try {
-    const bars = await api('market:candles', { exchange: S.exchange, pair: cfg.pair, interval: cfg.interval, limit: 300 });
-    const filled = fillSeq(bars, IV_MS[cfg.interval]).slice(-900);
+    const bars = await api('market:candles', {
+      exchange: S.exchange, pair: cfg.pair, interval: cfg.interval,
+      limit: Math.floor((ARCHIVE_LIMITS[cfg.interval] || 600) / 2), useArchive: true,
+    });
+    const filled = fillSeq(bars, IV_MS[cfg.interval]).slice(-8000);
     mc.setData(filled);
     if (filled.length) mc.setPrecision(precisionFor(filled[filled.length - 1].close));
     mc.extendToNow(IV_MS[cfg.interval]);
