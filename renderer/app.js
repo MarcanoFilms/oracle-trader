@@ -61,6 +61,27 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// ───────────────── velas: relleno de huecos ─────────────────
+// el exchange solo emite velas en los períodos CON trades; para un eje de
+// tiempo real (estilo TV) se rellenan los huecos con velas planas (vol 0)
+const IV_MS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 86400e3 };
+function flatBar(prev, t) {
+  return { timestamp: t, open: prev.close, high: prev.close, low: prev.close, close: prev.close, volume: 0 };
+}
+function fillSeq(bars, ivMs) {
+  if (!ivMs || bars.length < 2) return bars;
+  const out = [bars[0]];
+  for (let i = 1; i < bars.length; i++) {
+    let prev = out[out.length - 1];
+    for (let t = prev.timestamp + ivMs; t < bars[i].timestamp && out.length < 6000; t += ivMs) {
+      out.push(flatBar(prev, t));
+      prev = out[out.length - 1];
+    }
+    out.push(bars[i]);
+  }
+  return out;
+}
+
 // ───────────────── toast + modal ─────────────────
 let toastTimer = null;
 function toast(msg, cls = '', ms = 3500) {
@@ -94,12 +115,14 @@ async function loadCandles() {
   try {
     const bars = await api('market:candles', { exchange: S.exchange, pair: S.pair, interval: S.interval, limit: 500 });
     if (token !== S.loadToken) return;
-    Chart.setData(bars);
-    if (bars.length) {
-      S.lastPrice = bars[bars.length - 1].close;
+    const filled = fillSeq(bars, IV_MS[S.interval]).slice(-1500);
+    Chart.setData(filled);
+    if (filled.length) {
+      S.lastPrice = filled[filled.length - 1].close;
       Chart.setPrecision(precisionFor(S.lastPrice));
     }
-    $('#chartStatus').textContent = `${bars.length} velas · ${S.interval}`;
+    Chart.extendToNow(IV_MS[S.interval]);
+    $('#chartStatus').textContent = `${filled.length} velas · ${S.interval}`;
     refreshBotOverlays();
   } catch (e) {
     if (token === S.loadToken) $('#chartStatus').textContent = 'error: ' + e.message;
@@ -108,8 +131,10 @@ async function loadCandles() {
 
 async function pollCandles() {
   try {
+    const ivMs = IV_MS[S.interval];
     const bars = await api('market:candles', { exchange: S.exchange, pair: S.pair, interval: S.interval, limit: 3 });
-    Chart.updateBars(bars);
+    Chart.updateBars(fillSeq(bars, ivMs));
+    Chart.extendToNow(ivMs);   // vela nueva cada período aunque no haya trades
     if (bars.length) S.lastPrice = bars[bars.length - 1].close;
   } catch { /* siguiente tick */ }
 }
@@ -176,6 +201,21 @@ async function pollMarketTrades() {
 }
 
 // ───────────────── flota ─────────────────
+function sparkSvg(vals) {
+  if (!vals || vals.length < 2) return '';
+  const w = 100, h = 26;
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const rng = (max - min) || 1;
+  const pts = vals.map((v, i) =>
+    `${(i / (vals.length - 1) * w).toFixed(1)},${(h - 2 - (v - min) / rng * (h - 4)).toFixed(1)}`).join(' ');
+  return `<div class="spark-label">residuo acumulado</div>
+    <svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+      <polygon points="0,${h} ${pts} ${w},${h}" fill="rgba(247,147,26,0.08)"/>
+      <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.3"
+        vector-effect="non-scaling-stroke"/>
+    </svg>`;
+}
+
 function acctCard(a) {
   const dot = a.active === 'active' ? 'ok' : a.active === 'failed' ? 'err' : 'down';
   const badges = [
@@ -202,6 +242,7 @@ function acctCard(a) {
       </div>
       <div class="acct-pair">${a.pair ? a.pair.replace('_', '/') : '—'} · ${a.service}</div>
       ${stats}
+      ${sparkSvg(s?.sparkline)}
       <div class="acct-actions">
         ${running
           ? `<button class="acct-btn stop" data-act="stop" data-id="${a.id}">⏹ parar</button>
@@ -226,6 +267,13 @@ async function pollFleet() {
     <div class="ft-item"><span class="ft-label">ciclos</span><span class="ft-val">${cyc}</span></div>
     <div class="ft-item"><span class="ft-label">residuo XBT</span><span class="ft-val">${fmtQty(res, 6)}</span></div>`;
   $('#fleetList').innerHTML = S.fleet.map(acctCard).join('');
+
+  // tray: precio + estado de la flota
+  api('tray:update', {
+    price: S.ticker ? fmtPrice(S.ticker.last) : null,
+    pair: S.pair.replace('_', '/'),
+    fleet: S.fleet.map(a => ({ label: a.label, active: a.active })),
+  }).catch(() => {});
 
   // selección inicial: la cuenta principal
   if (!S.selectedId && S.fleet.length) selectAccount(S.fleet[0].id);
@@ -508,6 +556,120 @@ async function loadDrawings() {
   Chart.restoreDrawings(list);
 }
 
+// ───────────────── layout: splitters, fullscreen, multichart ─────────────────
+function saveUi() {
+  clearTimeout(saveUi._t);
+  saveUi._t = setTimeout(() => api('settings:set', { ui: S.ui }), 500);
+}
+
+function applyUi() {
+  const u = S.ui;
+  $('#sidebar').style.width = u.sidebarW + 'px';
+  $('#rightbar').style.width = u.rightW + 'px';
+  $('#bottomPanel').style.height = u.bottomH + 'px';
+  $('#sidebar').classList.toggle('collapsed', !!u.collapsed.side);
+  $('#rightbar').classList.toggle('collapsed', !!u.collapsed.right);
+  $('#bottomPanel').classList.toggle('collapsed', !!u.collapsed.bottom);
+}
+
+function makeSplitter(el, { drag, collapse }) {
+  el.addEventListener('mousedown', e => {
+    e.preventDefault();
+    el.classList.add('dragging');
+    const move = ev => drag(ev);
+    const up = () => {
+      el.classList.remove('dragging');
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      saveUi();
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  });
+  el.addEventListener('dblclick', () => { collapse(); applyUi(); saveUi(); });
+}
+
+function setupSplitters() {
+  makeSplitter($('#splitLeft'), {
+    drag: e => { S.ui.sidebarW = Math.max(180, Math.min(460, e.clientX)); S.ui.collapsed.side = false; applyUi(); },
+    collapse: () => { S.ui.collapsed.side = !S.ui.collapsed.side; },
+  });
+  makeSplitter($('#splitRight'), {
+    drag: e => { S.ui.rightW = Math.max(170, Math.min(460, window.innerWidth - e.clientX)); S.ui.collapsed.right = false; applyUi(); },
+    collapse: () => { S.ui.collapsed.right = !S.ui.collapsed.right; },
+  });
+  makeSplitter($('#splitBottom'), {
+    drag: e => { S.ui.bottomH = Math.max(90, Math.min(window.innerHeight - 220, window.innerHeight - e.clientY)); S.ui.collapsed.bottom = false; applyUi(); },
+    collapse: () => { S.ui.collapsed.bottom = !S.ui.collapsed.bottom; },
+  });
+}
+
+function toggleFullscreen() { document.body.classList.toggle('fullscreen'); }
+
+// ── multichart 2×2: la celda principal conserva dibujo/overlays; las otras
+// tres son vistas de mercado ligeras con su propio par e intervalo ──
+const minis = [null, null, null];
+
+function setMultichart(on) {
+  S.ui.multichart = on;
+  document.body.classList.toggle('multichart', on);
+  $('#btnGrid').classList.toggle('tb-active', on);
+  if (on) initMinis();
+  saveUi();
+}
+
+function buildCellSelects() {
+  const ex = S.exchanges.find(e => e.id === S.exchange);
+  const ivs = ex ? ex.intervals : ['15m'];
+  for (let i = 0; i < 3; i++) {
+    const cfg = S.ui.cells[i] = S.ui.cells[i] || { pair: null, interval: '1h' };
+    if (!cfg.pair) cfg.pair = S.pair;
+    const cell = document.querySelector(`.chart-cell.mini[data-cell="${i}"]`);
+    const pairSel = cell.querySelector('.cell-pair');
+    const ivSel = cell.querySelector('.cell-iv');
+    pairSel.innerHTML = S.pairList.map(p =>
+      `<option value="${p}" ${p === cfg.pair ? 'selected' : ''}>${p.replace('_', '/')}</option>`).join('');
+    ivSel.innerHTML = ivs.map(iv =>
+      `<option value="${iv}" ${iv === cfg.interval ? 'selected' : ''}>${iv}</option>`).join('');
+    pairSel.addEventListener('change', () => { cfg.pair = pairSel.value; saveUi(); loadMini(i); });
+    ivSel.addEventListener('change', () => { cfg.interval = ivSel.value; saveUi(); loadMini(i); });
+  }
+}
+
+function initMinis() {
+  for (let i = 0; i < 3; i++) {
+    if (!minis[i]) {
+      minis[i] = Chart.createMini(document.getElementById('miniChart' + i));
+      loadMini(i);
+    }
+  }
+}
+
+async function loadMini(i) {
+  const mc = minis[i], cfg = S.ui.cells[i];
+  if (!mc || !cfg) return;
+  try {
+    const bars = await api('market:candles', { exchange: S.exchange, pair: cfg.pair, interval: cfg.interval, limit: 300 });
+    const filled = fillSeq(bars, IV_MS[cfg.interval]).slice(-900);
+    mc.setData(filled);
+    if (filled.length) mc.setPrecision(precisionFor(filled[filled.length - 1].close));
+    mc.extendToNow(IV_MS[cfg.interval]);
+  } catch { /* siguiente intento */ }
+}
+
+async function pollMinis() {
+  if (!S.ui.multichart) return;
+  for (let i = 0; i < 3; i++) {
+    const mc = minis[i], cfg = S.ui.cells[i];
+    if (!mc || !cfg) continue;
+    try {
+      const bars = await api('market:candles', { exchange: S.exchange, pair: cfg.pair, interval: cfg.interval, limit: 3 });
+      mc.update(fillSeq(bars, IV_MS[cfg.interval]));
+      mc.extendToNow(IV_MS[cfg.interval]);
+    } catch { /* siguiente tick */ }
+  }
+}
+
 // ───────────────── cambios de par / intervalo ─────────────────
 async function switchPair(pair) {
   if (pair === S.pair) return;
@@ -584,6 +746,16 @@ function wireEvents() {
     });
   }
 
+  $('#btnFull').addEventListener('click', toggleFullscreen);
+  $('#btnGrid').addEventListener('click', () => setMultichart(!S.ui.multichart));
+  document.addEventListener('keydown', e => {
+    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
+    const k = e.key.toLowerCase();
+    if (k === 'f') toggleFullscreen();
+    else if (k === 'g') setMultichart(!S.ui.multichart);
+    else if (e.key === 'Escape') document.body.classList.remove('fullscreen');
+  });
+
   $('#pairSel').addEventListener('change', e => switchPair(e.target.value));
   $('#exchangeSel').addEventListener('change', e => {
     S.exchange = e.target.value;
@@ -606,6 +778,7 @@ function startLoops() {
   setInterval(pollFleet, cfg.pollFleetMs);
   setInterval(pollOrderbook, cfg.pollOrderbookMs);
   setInterval(pollMarketTrades, cfg.pollOrderbookMs + 1500);
+  setInterval(pollMinis, cfg.pollCandlesMs + 800);
   setInterval(refreshAccountDetail, 8000);
   setInterval(() => {
     if (['ordenes', 'balances'].includes(S.activeTab)) renderTab();
@@ -627,6 +800,14 @@ async function boot() {
   $('#exchangeSel').innerHTML = S.exchanges.map(e =>
     `<option value="${e.id}" ${e.id === S.exchange ? 'selected' : ''}>${e.label}</option>`).join('');
 
+  // estado de layout persistido (con defaults defensivos para settings viejos)
+  S.ui = S.settings.ui || {};
+  S.ui.sidebarW = S.ui.sidebarW || 285;
+  S.ui.rightW = S.ui.rightW || 250;
+  S.ui.bottomH = S.ui.bottomH || 265;
+  S.ui.collapsed = S.ui.collapsed || {};
+  S.ui.cells = S.ui.cells || [];
+
   Chart.init('chart', onDrawingsChanged);
   Chart.toggleIndicator('VOL', true);
   buildTimeframes();
@@ -634,17 +815,23 @@ async function boot() {
   buildDrawbar();
   buildTabs();
   wireEvents();
+  applyUi();
+  setupSplitters();
 
   // pares disponibles del exchange (con fallback al par configurado)
   try {
     const pairs = await api('market:pairs', { exchange: S.exchange });
     const opts = pairs.map(p => p.pair).sort();
     if (!opts.includes(S.pair)) opts.unshift(S.pair);
+    S.pairList = opts;
     $('#pairSel').innerHTML = opts.map(p =>
       `<option value="${p}" ${p === S.pair ? 'selected' : ''}>${p.replace('_', '/')}</option>`).join('');
   } catch {
+    S.pairList = [S.pair];
     $('#pairSel').innerHTML = `<option value="${S.pair}">${S.pair.replace('_', '/')}</option>`;
   }
+  buildCellSelects();
+  if (S.ui.multichart) setMultichart(true);
 
   await loadCandles();
   await loadDrawings();

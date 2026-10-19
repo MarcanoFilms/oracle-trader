@@ -151,6 +151,7 @@ select:hover { border-color: #2a3550; }
   border: 1px solid transparent; cursor: pointer;
 }
 .tb-btn:hover { color: #fff; background: var(--bg-hover); }
+.tb-btn.tb-active { color: var(--accent); background: rgba(247,147,26,0.1); border-color: rgba(247,147,26,0.35); }
 .tb-toggle { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-dim); cursor: pointer; white-space: nowrap; }
 .tb-toggle input { accent-color: var(--accent); cursor: pointer; }
 .tb-spacer { flex: 1; }
@@ -172,8 +173,42 @@ select:hover { border-color: #2a3550; }
 .ind-item input { accent-color: var(--accent); }
 .ind-group { font-size: 9px; color: var(--text-faint); letter-spacing: 1px; padding: 5px 8px 2px; }
 
+/* ═══ splitters y layout ajustable ═══ */
+.splitter { flex-shrink: 0; z-index: 5; background: transparent; transition: background 0.15s; }
+.splitter.v { width: 5px; cursor: col-resize; margin: 0 -2px; }
+.splitter.h { height: 5px; cursor: row-resize; margin: -2px 0; }
+.splitter:hover, .splitter.dragging { background: rgba(247,147,26,0.35); }
+#sidebar.collapsed, #rightbar.collapsed, #bottomPanel.collapsed { display: none; }
+body.fullscreen #sidebar, body.fullscreen #rightbar, body.fullscreen #bottomPanel,
+body.fullscreen .splitter { display: none; }
+
 /* ═══ área de gráfico ═══ */
 #chartArea { flex: 1; display: flex; min-height: 0; position: relative; }
+.chart-cell { min-width: 0; min-height: 0; overflow: hidden; }
+#cellMain { flex: 1; display: flex; min-width: 0; }
+.chart-cell.mini { display: none; }
+body.multichart #chartArea {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 1px;
+  background: var(--border);
+}
+body.multichart .chart-cell { display: flex; flex-direction: column; background: var(--bg); }
+body.multichart #cellMain { flex: none; flex-direction: row; }
+.cell-head {
+  display: flex; gap: 6px; align-items: center; flex-shrink: 0;
+  padding: 3px 8px; background: var(--bg-panel); border-bottom: 1px solid var(--border-soft);
+}
+.cell-head select { font-size: 11px; padding: 2px 6px; }
+.cell-chart { flex: 1; min-height: 0; }
+
+/* sparkline de residuo en la tarjeta */
+.spark { width: 100%; height: 28px; margin-top: 8px; display: block; }
+.spark-label {
+  font-size: 9px; color: var(--text-faint); text-transform: uppercase;
+  letter-spacing: 0.5px; margin-top: 7px;
+}
 #drawbar {
   width: 38px; flex-shrink: 0;
   background: var(--bg-panel); border-right: 1px solid var(--border-soft);
@@ -190,7 +225,7 @@ select:hover { border-color: #2a3550; }
 .draw-btn.active { background: rgba(247,147,26,0.15); color: var(--accent); }
 .draw-btn.danger:hover { color: var(--down); }
 .draw-sep { width: 22px; height: 1px; background: var(--border); margin: 4px 0; }
-#chart { flex: 1; min-width: 0; }
+#chart { flex: 1; min-width: 0; min-height: 0; }
 
 /* ═══ panel inferior ═══ */
 #bottomPanel {

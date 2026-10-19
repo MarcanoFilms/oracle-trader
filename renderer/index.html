@@ -40,6 +40,8 @@
       <div id="fleetList"></div>
     </aside>
 
+    <div class="splitter v" id="splitLeft" title="Arrastrar: redimensionar · doble click: colapsar"></div>
+
     <!-- ══════════ CENTRO: GRÁFICO + PANEL ══════════ -->
     <section id="center">
       <div id="chartToolbar">
@@ -54,12 +56,29 @@
         <label class="tb-toggle"><input type="checkbox" id="ovLots" checked /> Lotes</label>
         <label class="tb-toggle"><input type="checkbox" id="ovTrades" checked /> Trades bot</label>
         <div class="tb-spacer"></div>
+        <button class="tb-btn" id="btnGrid" title="Modo multi-chart 2×2 [G]">▦ 2×2</button>
+        <button class="tb-btn" id="btnFull" title="Gráfico a pantalla completa [F]">⛶</button>
         <span id="chartStatus" class="chart-status"></span>
       </div>
       <div id="chartArea">
-        <div id="drawbar"></div>
-        <div id="chart"></div>
+        <div class="chart-cell" id="cellMain">
+          <div id="drawbar"></div>
+          <div id="chart"></div>
+        </div>
+        <div class="chart-cell mini" data-cell="0">
+          <div class="cell-head"><select class="cell-pair"></select><select class="cell-iv"></select></div>
+          <div class="cell-chart" id="miniChart0"></div>
+        </div>
+        <div class="chart-cell mini" data-cell="1">
+          <div class="cell-head"><select class="cell-pair"></select><select class="cell-iv"></select></div>
+          <div class="cell-chart" id="miniChart1"></div>
+        </div>
+        <div class="chart-cell mini" data-cell="2">
+          <div class="cell-head"><select class="cell-pair"></select><select class="cell-iv"></select></div>
+          <div class="cell-chart" id="miniChart2"></div>
+        </div>
       </div>
+      <div class="splitter h" id="splitBottom" title="Arrastrar: redimensionar · doble click: colapsar"></div>
       <div id="bottomPanel">
         <div id="tabsBar">
           <div class="tabs" id="tabs"></div>
@@ -68,6 +87,8 @@
         <div id="tabContent"><div class="empty-hint">Selecciona una cuenta de la flota para ver su detalle</div></div>
       </div>
     </section>
+
+    <div class="splitter v" id="splitRight" title="Arrastrar: redimensionar · doble click: colapsar"></div>
 
     <!-- ══════════ MERCADO ══════════ -->
     <aside id="rightbar">

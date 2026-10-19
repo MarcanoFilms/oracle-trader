@@ -11,6 +11,7 @@ const Chart = (() => {
   const userOverlays = new Map();    // id → {name, points}
   const indicatorPanes = new Map();  // nombre → paneId
   let lastBarTs = 0;
+  let lastClose = null;
 
   // ───────── overlays propios ─────────
   function registerCustomOverlays() {
@@ -157,7 +158,9 @@ const Chart = (() => {
 
   function setData(bars) {
     chart.applyNewData(bars);
-    lastBarTs = bars.length ? bars[bars.length - 1].timestamp : 0;
+    const last = bars[bars.length - 1];
+    lastBarTs = last ? last.timestamp : 0;
+    lastClose = last ? last.close : null;
   }
 
   // merge incremental: actualiza la última vela o añade la nueva
@@ -166,7 +169,19 @@ const Chart = (() => {
       if (b.timestamp >= lastBarTs) {
         chart.updateData(b);
         lastBarTs = b.timestamp;
+        lastClose = b.close;
       }
+    }
+  }
+
+  // el exchange solo emite velas en períodos CON trades: sintetiza velas planas
+  // (o=h=l=c=último cierre, vol 0) hasta el período actual, estilo TradingView
+  function extendToNow(ivMs) {
+    if (!lastBarTs || lastClose == null || !ivMs) return;
+    const current = Math.floor(Date.now() / ivMs) * ivMs;
+    let guard = 0;
+    for (let t = lastBarTs + ivMs; t <= current && guard < 3000; t += ivMs, guard++) {
+      updateBars([{ timestamp: t, open: lastClose, high: lastClose, low: lastClose, close: lastClose, volume: 0 }]);
     }
   }
 
@@ -289,8 +304,40 @@ const Chart = (() => {
     }
   }
 
+  // ───────── mini-charts (modo 2×2) ─────────
+  function createMini(dom) {
+    const mini = klinecharts.init(dom, { styles: themeStyles() });
+    mini.createIndicator('VOL', false, { height: 46 });
+    mini.setOffsetRightDistance(40);
+    const ro = new ResizeObserver(() => mini && mini.resize());
+    ro.observe(dom);
+    let ts = 0, close = null;
+    return {
+      setPrecision(p) { try { mini.setPriceVolumePrecision(p, 4); } catch { /* API vieja */ } },
+      setData(bars) {
+        mini.applyNewData(bars);
+        const l = bars[bars.length - 1];
+        ts = l ? l.timestamp : 0;
+        close = l ? l.close : null;
+      },
+      update(bars) {
+        for (const b of bars) {
+          if (b.timestamp >= ts) { mini.updateData(b); ts = b.timestamp; close = b.close; }
+        }
+      },
+      extendToNow(ivMs) {
+        if (!ts || close == null || !ivMs) return;
+        const current = Math.floor(Date.now() / ivMs) * ivMs;
+        let guard = 0;
+        for (let t = ts + ivMs; t <= current && guard < 3000; t += ivMs, guard++) {
+          this.update([{ timestamp: t, open: close, high: close, low: close, close, volume: 0 }]);
+        }
+      },
+    };
+  }
+
   return {
-    init, setData, updateBars, setPrecision, setBotOverlays, clearBot,
-    startDraw, restoreDrawings, clearDrawings, toggleIndicator, dataRange,
+    init, setData, updateBars, extendToNow, setPrecision, setBotOverlays, clearBot,
+    startDraw, restoreDrawings, clearDrawings, toggleIndicator, dataRange, createMini,
   };
 })();

@@ -8,6 +8,7 @@ const CHANNELS = new Set([
   'fleet:list', 'fleet:state', 'fleet:control', 'fleet:logs',
   'fleet:balances', 'fleet:orders',
   'drawings:load', 'drawings:save',
+  'tray:update',
 ]);
 
 contextBridge.exposeInMainWorld('oracle', {

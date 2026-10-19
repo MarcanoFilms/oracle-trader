@@ -17,6 +17,18 @@ const DEFAULTS = {
   pollCandlesMs: 6000,
   pollFleetMs: 10000,
   pollOrderbookMs: 5000,
+  ui: {
+    sidebarW: 285,
+    rightW: 250,
+    bottomH: 265,
+    collapsed: { side: false, right: false, bottom: false },
+    multichart: false,
+    cells: [
+      { pair: null, interval: '1h' },
+      { pair: null, interval: '4h' },
+      { pair: null, interval: '1d' },
+    ],
+  },
 };
 
 function load() {

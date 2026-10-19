@@ -1,7 +1,7 @@
 // Oracle Trader — proceso principal de Electron.
 // Toda la E/S (exchange, filesystem del bot, systemd) vive aquí; el renderer
 // solo habla por IPC. Las credenciales jamás cruzan al renderer.
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -10,6 +10,8 @@ const fleet = require('./src/fleet');
 const exchanges = require('./src/exchanges');
 
 let win = null;
+let tray = null;
+let trayData = {};
 
 function createWindow() {
   win = new BrowserWindow({
@@ -29,6 +31,15 @@ function createWindow() {
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
+  // cerrar la ventana la oculta a la bandeja (la app sigue vigilando);
+  // salir de verdad: menú del tray o Ctrl+Q desde el tray
+  win.on('close', e => {
+    if (!app.quitting && !process.env.ORACLE_SHOT) {
+      e.preventDefault();
+      win.hide();
+    }
+  });
+
   // modo captura para verificación headless: ORACLE_SHOT=/ruta.png
   if (process.env.ORACLE_SHOT) {
     win.webContents.once('did-finish-load', () => {
@@ -43,6 +54,52 @@ function createWindow() {
         app.quit();
       }, Number(process.env.ORACLE_SHOT_DELAY || 12000));
     });
+  }
+}
+
+// ───────── tray: precio + estado de la flota ─────────
+function toggleWindow() {
+  if (!win) return;
+  if (win.isVisible()) win.hide();
+  else { win.show(); win.focus(); }
+}
+
+function rebuildTray() {
+  if (!tray) return;
+  const lines = [];
+  if (trayData.price) lines.push(`${trayData.price} ${trayData.pair || ''}`);
+  for (const a of trayData.fleet || []) {
+    lines.push(`${a.active === 'active' ? '●' : '○'} ${a.label}`);
+  }
+  tray.setToolTip('Oracle Trader' + (lines.length ? '\n' + lines.join('\n') : ''));
+  const items = [];
+  if (trayData.price) {
+    items.push({ label: `${trayData.price}  ${trayData.pair || ''}`, enabled: false });
+    items.push({ type: 'separator' });
+  }
+  for (const a of trayData.fleet || []) {
+    items.push({
+      label: `${a.active === 'active' ? '●' : '○'} ${a.label} — ${a.active === 'active' ? 'activo' : a.active}`,
+      enabled: false,
+    });
+  }
+  items.push(
+    { type: 'separator' },
+    { label: 'Mostrar / ocultar', click: toggleWindow },
+    { label: 'Salir', click: () => { app.quitting = true; app.quit(); } },
+  );
+  tray.setContextMenu(Menu.buildFromTemplate(items));
+}
+
+function createTray() {
+  try {
+    const img = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'))
+      .resize({ width: 22, height: 22 });
+    tray = new Tray(img);
+    tray.on('click', toggleWindow);
+    rebuildTray();
+  } catch (e) {
+    console.error('tray no disponible:', e.message);
   }
 }
 
@@ -90,5 +147,11 @@ ipcMain.handle('fleet:orders', async (_e, { id, exchange }) => {
 ipcMain.handle('drawings:load', (_e, { key }) => settings.loadDrawings(key));
 ipcMain.handle('drawings:save', (_e, { key, list }) => settings.saveDrawings(key, list));
 
-app.whenReady().then(createWindow);
+ipcMain.handle('tray:update', (_e, data) => { trayData = data || {}; rebuildTray(); });
+
+app.whenReady().then(() => {
+  createWindow();
+  if (!process.env.ORACLE_SHOT) createTray();
+});
+app.on('before-quit', () => { app.quitting = true; });
 app.on('window-all-closed', () => app.quit());

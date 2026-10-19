@@ -43,11 +43,36 @@ async function serviceState(service) {
   }
 }
 
+// serie de residuo acumulado por ciclo cerrado (para el sparkline de la tarjeta):
+// cada venta de un lote deja residuo ≈ qty comprada − qty vendida
+function residueSparkline(trades, points = 40) {
+  const buys = new Map();
+  let cum = 0;
+  const series = [];
+  for (const t of trades || []) {
+    if (t.lot == null) continue;
+    if (t.side === 'buy') { buys.set(t.lot, t); continue; }
+    const b = buys.get(t.lot);
+    if (b) {
+      cum += Math.max(0, (b.qty || 0) - (t.qty || 0));
+      series.push(cum);
+      buys.delete(t.lot);
+    }
+  }
+  if (series.length <= points) return series;
+  const out = [];
+  for (let i = 0; i < points; i++) {
+    out.push(series[Math.floor(i * (series.length - 1) / (points - 1))]);
+  }
+  return out;
+}
+
 function summarize(state) {
   if (!state) return null;
   const trades = state.trades || [];
   const last = trades[trades.length - 1];
   return {
+    sparkline: residueSparkline(trades),
     cycles: state.cycles ?? 0,
     residue: state.xbt_residue ?? 0,
     lots: (state.lots || []).length,
