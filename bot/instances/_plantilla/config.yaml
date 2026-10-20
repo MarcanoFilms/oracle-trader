@@ -1,0 +1,43 @@
+# Plantilla de instancia multi-cuenta — copiar a instances/NOMBRE/config.yaml
+# y rellenar capital/reserva con los números reales de ESA cuenta.
+# Arranque: systemctl --user enable --now neoxa-bot@NOMBRE
+pair: BTCB2_BTC
+strategy: accum
+dry_run: true                # SIEMPRE arrancar en dry-run; pasar a false tras verificar
+label: NOMBRE                # prefijo [NOMBRE] en los avisos de Telegram
+
+# --- capital (por cuenta — medir el balance real antes de arrancar) ---
+quote_capital: 0.0           # BTC de trabajo de esta cuenta
+xbt_reserve: 0.0             # stack intocable de esta cuenta (0 si llega vacía)
+min_lot_value: 0.000005
+max_lots: 30
+
+# --- geometría de la escalera ---
+# DESFASAR entre cuentas (first_step_pct / step_pct distintos) para que no
+# compren todas el mismo wick: juntas cubren más rango = escalera más densa.
+step_pct: 0.025
+first_step_pct: 0.015
+n_buy_levels: 10
+rebuy_block_frac: 0.5
+reanchor_steps: 1.6
+touch_buffer: 0.004
+
+# --- compound ---
+compound_pct: 0.5
+
+# --- trailing take-profit ---
+trail_enabled: true
+trail_pct: 0.01
+trail_activate: 0.01
+trail_hot_zone: 0.02
+
+# --- ejecución ---
+poll_seconds: 4
+poll_hot: 2
+cancel_buys_on_exit: true
+summary_seconds: 21600
+
+# --- avisos ---
+telegram: true
+telegram_cycles: true        # si el chat se llena con N cuentas, apagar en las secundarias
+milestone_xbt: 0.005

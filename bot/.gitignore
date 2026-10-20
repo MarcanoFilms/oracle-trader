@@ -1,0 +1,9 @@
+.env
+/config.yaml
+state*.json
+watchdog_state.json
+logs/
+venv/
+__pycache__/
+instances/*
+!instances/_plantilla/

@@ -1,0 +1,16 @@
+# Unidad de usuario para la cuenta principal.
+# Instalar: cp a ~/.config/systemd/user/ (ajustar WorkingDirectory si hace falta)
+#           systemctl --user daemon-reload && systemctl --user enable --now neoxa-bot
+# Para sobrevivir al logout: loginctl enable-linger $USER
+[Unit]
+Description=Acumulador de XBT en neoxa.exchange (escalera + lotes + trailing)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/oracle-trader/bot
+ExecStart=%h/oracle-trader/bot/venv/bin/python run.py
+Restart=always
+RestartSec=20
+
+[Install]
+WantedBy=default.target

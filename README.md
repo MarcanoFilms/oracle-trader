@@ -1,66 +1,123 @@
 # Oracle Trader
 
-Dashboard de escritorio (Electron) para administrar la **flota de bots de trading** de forma local, con gráficos estilo TradingView.
+**Trading desk de escritorio + bot acumulador spot para el mercado XBT (BTCB2)** — self-hosted, 100% local, sin servicios de terceros. Gráficos estilo TradingView con la estrategia del bot pintada sobre el precio.
 
-![estilo](https://img.shields.io/badge/estilo-trading%20desk-f7931a) ![local](https://img.shields.io/badge/100%25-local-26a69a)
+*Desktop trading desk + spot accumulation bot for the XBT (BTCB2) market on neoxa.exchange. Self-hosted and fully local. Docs are in Spanish — the code comments too; PRs welcome.*
 
-## Qué hace
+![Oracle Trader](docs/desk.png)
 
-- **Gráfico estilo TradingView** (KLineCharts) del par que opera el bot (XBT/BTC en neoxa.exchange), con velas en vivo (1m–1d), indicadores (MA/EMA/BOLL/VOL/MACD/RSI/KDJ) y **herramientas de dibujo** (líneas de tendencia, horizontales, canales, fibonacci, notas) que **persisten por par** entre sesiones.
-- **La estrategia pintada sobre el precio**: la escalera de compras (líneas verdes), los objetivos de venta de cada lote (líneas naranjas) y cada trade del bot como flecha ▲/▼ sobre la vela donde ocurrió.
-- **Flota multi-cuenta**: descubre automáticamente la cuenta principal y las instancias (`instances/*`) del bot, muestra su estado systemd en vivo y permite **arrancar / parar / reiniciar** cada bot con confirmación.
-- **Detalle por cuenta**: resumen (ciclos, residuo, residuo/día, compound, capital dinámico, reserva), lotes abiertos con distancia al objetivo y estado del trailing, escalera, historial de trades con margen por ciclo, órdenes y balances en vivo del exchange (API autenticada), logs del journal y config.
-- **Mercado en vivo**: libro de órdenes (con las órdenes del AMM marcadas `≋` y el estado del pool), trades del mercado y ticker 24h.
+## Las dos piezas
 
-## Uso
+| | |
+|---|---|
+| **El motor** ([`bot/`](bot/)) | Bot Python de acumulación spot: escalera de compras + venta por lote + trailing take-profit con piso sagrado, compound, multi-cuenta por instancias systemd. Backtesting con el mismo código del bot. [Documentación de la estrategia →](bot/README.md) |
+| **El dashboard** (raíz) | App Electron que administra la flota: gráfico estilo TV (velas/Heikin Ashi/línea, indicadores editables, dibujo persistente), escalera/lotes/trades del bot sobre el gráfico, control systemd por cuenta, libro con AMM, multi-chart 2×2, tray. Solo-lectura contra el exchange: operar es trabajo del bot. |
+
+## Dashboard — características
+
+- **Gráfico estilo TradingView** (KLineCharts): 1m–1d, tipos velas / huecas / **Heikin Ashi** / OHLC / línea, indicadores **con editor** (períodos y colores por línea, persistentes), herramientas de dibujo (tendencias, canales, fibonacci…) que se guardan por par.
+- **La estrategia visible**: escalera de compras (líneas verdes), objetivo de cada lote (naranjas), cada trade del bot como ▲/▼ en su vela.
+- **Flota multi-cuenta**: descubrimiento automático (cuenta principal + `instances/*`), estado systemd en vivo, arrancar/parar/reiniciar con confirmación, sparkline de residuo por cuenta.
+- **Detalle por cuenta**: resumen, lotes con distancia al objetivo y estado del trailing, escalera, trades con margen, órdenes/balances live del exchange, logs del journal, config.
+- **Mercado**: libro de órdenes con el AMM marcado (`≋`) y estado del pool, trades del mercado, ticker 24h.
+- **Historia profunda opcional**: fusiona un archivo local de velas CSV con la ventana live de la API (que solo da 1000 velas) — ver [Archivo de velas](#archivo-de-velas-opcional).
+- Paneles redimensionables/colapsables, `F` fullscreen, `G` multi-chart 2×2, icono de bandeja con precio y estado de los bots.
+- Las credenciales **nunca** llegan a la UI: el proceso principal lee los `.env` del bot y el renderer solo recibe datos por IPC con lista blanca.
+
+## Arranque rápido
 
 ```bash
-npm install        # una vez
-./oracle-trader.sh # o npm start
+# Dashboard (Node 20+)
+npm install
+npm start
+
+# ¿Sin bot todavía? Modo demo con una flota ficticia:
+ORACLE_BOT_ROOT=./demo npm start
 ```
 
-También queda instalado en el menú de aplicaciones como **Oracle Trader** (`~/.local/share/applications/oracle-trader.desktop`).
+```bash
+# Bot (Python 3.10+) — guía completa en bot/README.md
+cd bot
+python -m venv venv && ./venv/bin/pip install -r requirements.txt
+cp config.example.yaml config.yaml    # capital, reserva, geometría
+cp .env.example .env                  # API key del exchange
+./venv/bin/python run.py              # SIEMPRE empezar con dry_run: true
+```
+
+El dashboard busca el bot en `~/Projects/neoxa-bot` y si no existe usa `./bot`
+(configurable en `~/.config/oracle-trader/settings.json` → `botRoot`). Para el
+servicio systemd del bot hay plantillas en [`bot/systemd/`](bot/systemd/).
+
+> ⚠️ **Descargo**: este software opera dinero real en un exchange. Úsalo bajo tu
+> única responsabilidad, empieza en `dry_run` y con capital que puedas perder.
+> No es consejo financiero.
+
+## Capturas
+
+| Trading desk | Multi-chart 2×2 |
+|---|---|
+| ![desk](docs/desk.png) | ![grid](docs/grid.png) |
 
 ## Arquitectura
 
 ```
-main.js                 proceso principal: toda la E/S vive aquí
+main.js                proceso principal: TODA la E/S vive aquí
 src/
-  settings.js           config de la app + persistencia de dibujos (~/.config/oracle-trader)
-  fleet.js              descubre cuentas del bot, lee config/estado, systemd, journal
-  exchanges/
-    index.js            registro de adaptadores
-    neoxa.js            adaptador neoxa.exchange (REST)
-preload.js              puente IPC con lista blanca de canales
-renderer/               UI (sin framework, sin build): index.html + app.js + chart.js
+  settings.js          config de la app + dibujos (~/.config/oracle-trader)
+  fleet.js             descubre cuentas del bot, lee config/estado, systemd, journal
+  archive.js           lector del archivo histórico de velas (CSV)
+  exchanges/           adaptadores de exchange (hoy: neoxa; interfaz de 6 métodos)
+preload.js             puente IPC con lista blanca de canales
+renderer/              UI sin framework ni build: app.js + chart.js + styles.css
+bot/                   el motor (Python) — ver bot/README.md
+demo/                  flota ficticia para probar el dashboard sin bot
 ```
 
-Decisiones de diseño:
+Decisiones de diseño (para quien quiera auditar — empezad por `src/` y
+[`bot/neoxa_bot/accum.py`](bot/neoxa_bot/accum.py); los tests del bot están en
+`bot/test_*.py`):
 
-- **Las credenciales jamás cruzan al renderer**: las lee `fleet.js` de los `.env` del bot y las usa el proceso principal; la UI solo recibe datos.
-- **Solo lectura contra el exchange**: el dashboard observa (velas, libro, balances, órdenes); operar es trabajo del bot. El control es sobre el *servicio* (systemd), no sobre las órdenes.
-- **El bot es la fuente de verdad**: lotes, escalera y trades salen de su `state.json`; no se duplica estado.
+- **Solo lectura contra el exchange** desde el dashboard: observa velas, libro,
+  balances y órdenes; jamás coloca ni cancela órdenes. El control es sobre el
+  *servicio* systemd del bot.
+- **El bot es la fuente de verdad**: lotes, escalera y trades salen de su
+  `state.json`; el dashboard no duplica estado.
+- **Credenciales confinadas al proceso principal**; renderer sin
+  `nodeIntegration`, IPC con lista blanca, CSP sin orígenes externos.
+- **Multi-exchange por adaptadores**: implementar
+  `candles/ticker/orderbook/marketTrades/balances/openOrders` en
+  `src/exchanges/` y registrarlo — el resto no cambia.
 
-## Multi-exchange (roadmap)
+## Archivo de velas (opcional)
 
-La estrategia (escalera + lotes + trailing) es agnóstica del par y del exchange; el dashboard también. Para añadir un exchange basta con implementar la interfaz del adaptador en `src/exchanges/`:
+La API del exchange solo expone ~1000 velas por intervalo (el 1m caduca en
+días). El dashboard puede fusionar un archivo local de CSVs con la ventana live
+para mostrar toda la historia del mercado:
 
 ```
-candles(pair, interval, limit) · ticker(pair) · orderbook(pair, depth)
-marketTrades(pair, limit) · balances() · openOrders()
+<archiveRoot>/data/<exchange>/<par>/<intervalo>/<YYYY-MM>.csv
+# header: time,open,high,low,close,volume   (time en epoch segundos UTC)
 ```
 
-Pendiente / ideas (algunas inspiradas en OctoBot):
+`archiveRoot` se configura en settings (por defecto `~/Projects/xbt-market-data`).
+Un colector de ejemplo (Node + systemd timer de 15 min) mantiene el archivo al
+día; sin archivo, el dashboard funciona igual con la ventana de la API.
 
-- [x] ~~Historia profunda en el gráfico~~ — fusiona el archivo [xbt-market-data](https://github.com/MarcanoFilms/xbt-market-data) con la ventana live de la API (1d/4h desde el génesis del mercado).
-- [ ] Adaptador **nonkyc.io** (misma familia de API que neoxa) y genérico vía **ccxt** para exchanges grandes.
-- [ ] Registro de cuentas con exchange+par+credenciales arbitrarios (hoy la flota se descubre del directorio del bot de neoxa).
-- [ ] Curva de equity / residuo acumulado por cuenta (gráfico histórico).
+## Roadmap
+
+- [ ] Adaptador **nonkyc.io** (misma familia de API) y genérico vía **ccxt**.
+- [ ] Registro de cuentas con exchange+par+credenciales arbitrarios.
+- [ ] Curva de equity / residuo acumulado por cuenta.
 - [ ] Backtesting visual: pintar el resultado de `backtest_accum.py` sobre el gráfico.
-- [ ] Editor de config con validación y aviso de reinicio.
-- [ ] Perfiles de estrategia por cuenta (geometrías distintas de escalera).
+- [ ] Herramienta de medición estilo TV y editor de config con validación.
+- [ ] Notificaciones nativas (ciclo cerrado, trailing activado, bot caído).
 
-## Requisitos
+## Contribuir
 
-- Node 20+ (la raíz del bot se configura en `~/.config/oracle-trader/settings.json`; por defecto `~/Projects/neoxa-bot`)
-- Los bots corren como servicios systemd de usuario (`neoxa-bot.service`, `neoxa-bot@INSTANCIA.service`)
+Issues y PRs bienvenidos — auditorías de seguridad especialmente. El bot no se
+toca sin backtest (`bot/backtest_accum.py` corre el mismo código contra velas
+reales) y sus invariantes son innegociables.
+
+## Licencia
+
+[MIT](LICENSE) © MarcanoFilms
