@@ -1,0 +1,15 @@
+# Unidad plantilla multi-cuenta: una instancia por cuenta extra.
+# La instancia NOMBRE usa instances/NOMBRE/{config.yaml,.env,state.json,logs}.
+# Arranque: systemctl --user enable --now neoxa-bot@NOMBRE
+[Unit]
+Description=Acumulador de XBT en neoxa.exchange — instancia %i
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/oracle-trader/bot
+ExecStart=%h/oracle-trader/bot/venv/bin/python run.py --instance %i
+Restart=always
+RestartSec=20
+
+[Install]
+WantedBy=default.target

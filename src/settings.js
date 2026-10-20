@@ -3,7 +3,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const DIR = path.join(os.homedir(), '.config', 'oracle-trader');
+// ORACLE_CONFIG_DIR permite una config aislada (tests/captura); por defecto
+// ~/.config/oracle-trader
+const DIR = process.env.ORACLE_CONFIG_DIR || path.join(os.homedir(), '.config', 'oracle-trader');
 const FILE = path.join(DIR, 'settings.json');
 const DRAWINGS_DIR = path.join(DIR, 'drawings');
 
@@ -36,11 +38,20 @@ const DEFAULTS = {
 };
 
 function load() {
+  let s;
   try {
-    return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) };
+    s = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) };
   } catch {
-    return { ...DEFAULTS };
+    s = { ...DEFAULTS };
   }
+  // raíz del bot: override por entorno > settings > motor incluido en el repo
+  if (process.env.ORACLE_BOT_ROOT) {
+    s.botRoot = process.env.ORACLE_BOT_ROOT;
+  } else if (!fs.existsSync(s.botRoot)) {
+    const bundled = path.join(__dirname, '..', 'bot');
+    if (fs.existsSync(bundled)) s.botRoot = bundled;
+  }
+  return s;
 }
 
 function save(patch) {

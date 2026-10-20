@@ -1,0 +1,14 @@
+# Cuenta de DEMOSTRACIÓN — datos ficticios para probar el dashboard sin bot.
+# Arranque: ORACLE_BOT_ROOT=./demo npm start
+pair: BTCB2_BTC
+strategy: accum
+dry_run: true
+label: Demo
+quote_capital: 0.004
+xbt_reserve: 0.1
+step_pct: 0.025
+first_step_pct: 0.015
+n_buy_levels: 8
+compound_pct: 0.5
+trail_enabled: true
+trail_pct: 0.01

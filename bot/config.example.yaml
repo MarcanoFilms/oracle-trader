@@ -1,0 +1,45 @@
+# Acumulador de XBT — configuración de ejemplo
+# Copiar a config.yaml, medir el balance real de la cuenta y rellenar capital.
+# SIEMPRE arrancar en dry_run: true y verificar el comportamiento antes de LIVE.
+pair: BTCB2_BTC
+strategy: accum
+dry_run: true                # true = simula, no toca fondos reales
+label: principal             # prefijo de los avisos de Telegram
+
+# --- capital ---
+quote_capital: 0.0           # BTC de trabajo (medir el balance disponible real)
+xbt_reserve: 0.0             # stack intocable: el bot jamás vende por debajo de esto
+min_lot_value: 0.000005      # umbral de polvo en BTC
+max_lots: 30                 # tope de lotes abiertos (cinturón de seguridad)
+
+# --- geometría de la escalera ---
+# Calibrada por backtest (backtest_accum.py) sobre velas reales del par.
+# Con varias cuentas, desfasar step/first_step entre ellas para cubrir más rango.
+step_pct: 0.025              # paso entre niveles (y margen objetivo de cada lote)
+first_step_pct: 0.015        # 1er escalón más somero: caza retrocesos chicos
+n_buy_levels: 10             # compras simultáneas bajo el precio (~22% de profundidad)
+rebuy_block_frac: 0.5        # no recomprar a <0.5×paso de un lote/compra existente
+reanchor_steps: 1.6          # re-anclar si la mejor compra queda a >1.6 pasos del precio
+touch_buffer: 0.004          # margen bajo el bid para no cruzar el AMM (post-only)
+
+# --- compound ---
+compound_pct: 0.5            # fracción del residuo que se cosecha en quote y
+                             # engorda la escalera; el resto queda en stack XBT
+
+# --- trailing take-profit ---
+trail_enabled: true          # deja correr la venta en spikes, cruza en la reversión
+trail_pct: 0.01              # vende al retroceder 1% desde el pico
+trail_activate: 0.01         # cancela la orden base al llegar a 1% del objetivo
+trail_hot_zone: 0.02         # polling rápido cuando el precio está a 2% de un objetivo
+# PISO SAGRADO: una venta jamás se ejecuta bajo el objetivo (costo×(1+paso))
+
+# --- ejecución ---
+poll_seconds: 4              # frecuencia base (resolución para cazar wicks)
+poll_hot: 2                  # polling acelerado con lotes en zona de trailing
+cancel_buys_on_exit: true    # al parar: cancela compras; las ventas de lotes QUEDAN
+summary_seconds: 21600       # resumen en log/Telegram cada 6h
+
+# --- avisos ---
+telegram: true               # arranque/caída/resumen/hitos (token/chat en .env)
+telegram_cycles: true        # aviso por cada ciclo cerrado
+milestone_xbt: 0.005         # hito cada vez que el residuo cruza este múltiplo
