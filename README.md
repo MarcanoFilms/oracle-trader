@@ -20,7 +20,7 @@
 - **Flota multi-cuenta**: descubrimiento automático (cuenta principal + `instances/*`), estado systemd en vivo, arrancar/parar/reiniciar con confirmación, sparkline de residuo por cuenta.
 - **Detalle por cuenta**: resumen, lotes con distancia al objetivo y estado del trailing, escalera, trades con margen, órdenes/balances live del exchange, logs del journal, config.
 - **Mercado**: libro de órdenes con el AMM marcado (`≋`) y estado del pool, trades del mercado, ticker 24h.
-- **Historia profunda opcional**: fusiona un archivo local de velas CSV con la ventana live de la API (que solo da 1000 velas) — ver [Archivo de velas](#archivo-de-velas-opcional).
+- **Historia profunda opcional**: fusiona el archivo público [xbt-market-data](https://github.com/MarcanoFilms/xbt-market-data) con la ventana live de la API (que solo da 1000 velas) — el mercado completo desde su génesis. Ver [Archivo de velas](#archivo-de-velas-opcional).
 - Paneles redimensionables/colapsables, `F` fullscreen, `G` multi-chart 2×2, icono de bandeja con precio y estado de los bots.
 - Las credenciales **nunca** llegan a la UI: el proceso principal lee los `.env` del bot y el renderer solo recibe datos por IPC con lista blanca.
 
@@ -91,17 +91,21 @@ Decisiones de diseño (para quien quiera auditar — empezad por `src/` y
 ## Archivo de velas (opcional)
 
 La API del exchange solo expone ~1000 velas por intervalo (el 1m caduca en
-días). El dashboard puede fusionar un archivo local de CSVs con la ventana live
-para mostrar toda la historia del mercado:
+días). El dashboard fusiona un archivo local de CSVs con la ventana live para
+mostrar toda la historia del mercado — y ese archivo ya existe y es público:
 
-```
-<archiveRoot>/data/<exchange>/<par>/<intervalo>/<YYYY-MM>.csv
-# header: time,open,high,low,close,volume   (time en epoch segundos UTC)
+**[MarcanoFilms/xbt-market-data](https://github.com/MarcanoFilms/xbt-market-data)** —
+registro del mercado XBT desde su génesis (2026-09-01), actualizado cada 15 min.
+
+```bash
+git clone https://github.com/MarcanoFilms/xbt-market-data ~/Projects/xbt-market-data
+# (la ruta por defecto de archiveRoot; otra ruta → settings.json → archiveRoot)
 ```
 
-`archiveRoot` se configura en settings (por defecto `~/Projects/xbt-market-data`).
-Un colector de ejemplo (Node + systemd timer de 15 min) mantiene el archivo al
-día; sin archivo, el dashboard funciona igual con la ventana de la API.
+Formato: `data/<exchange>/<par>/<intervalo>/<YYYY-MM>.csv` con header
+`time,open,high,low,close,volume` (epoch segundos UTC). El colector que lo
+mantiene al día (Node + systemd timer) vive en ese repo. Sin archivo, el
+dashboard funciona igual con la ventana de la API.
 
 ## Roadmap
 
