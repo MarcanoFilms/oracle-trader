@@ -37,9 +37,28 @@ Escalera de compras bajo el precio + venta por lote. Sin centro EMA, sin ventas
   2. Jamás vender bajo `costo×(1+paso)`; las ventas de lotes no se cancelan.
   3. La reserva (`xbt_reserve`) es intocable.
   4. Compras solo bajo el touch (post-only + `touch_buffer` contra el AMM).
+- **Re-anclaje**: solo los lotes hasta 1 paso sobre la referencia cuentan como
+  cobertura — un lote "submarino" comprado muy arriba antes de un desplome ya no
+  congela la escalera lejos del precio. Cooldown (`reanchor_cooldown`) contra
+  loops de cancelar/recolocar.
+- **Auto-sync de capital** (`capital_autosync`): en cada pasada, si el capital
+  real (quote libre + escrow de compras + lotes a costo) supera el capital de
+  trabajo por `autosync_min_abs` **y** `autosync_min_rel`, la escalera se
+  redimensiona sola — un depósito o una venta de trailing sobre el objetivo
+  entran a trabajar sin tocar la config. Nunca encoge (las retiradas son
+  manuales) y solo corre con el estado reconciliado limpio.
 - **Reconciliación**: una orden que desaparece de `status=active` se busca en
   `filled`/`cancelled` y se procesa por su `quantity_filled` real (fills
-  parciales y cancelaciones externas; "desaparecida" ≠ "ejecutada").
+  parciales y cancelaciones externas; "desaparecida" ≠ "ejecutada"). Los lotes
+  se cierran al precio REAL de ejecución (lo que mide el beneficio del
+  trailing). Si una orden no aparece en el historial, decide el **saldo**: si el
+  XBT del lote sigue libre se recoloca la venta; si falta, se cierra — así un
+  lote nunca se vende dos veces.
+- **Resiliencia de red**: lecturas con timeout corto y reintento; los POST de
+  órdenes **no** se reintentan a ciegas tras un timeout (el exchange puede
+  haberlas creado igual) — el bot busca la orden activa y la adopta, sin
+  duplicados. El arranque tolera cuelgues del exchange en vez de entrar en
+  crash-loop, y las ventas rechazadas por saldo esperan con backoff.
 - En caída fuerte el capital se agota comprando y el bot espera la recuperación
   con los lotes abiertos; en subida fuerte los lotes se liquidan con residuo y la
   escalera persigue el precio. Gana en lateral/choppy.
@@ -73,7 +92,14 @@ reconcilian al arrancar. `state.json` guarda lotes/escalera/trades.
 `instances/_plantilla/`, servicio `neoxa-bot@NOMBRE`. Cada cuenta es
 independiente (su capital, su reserva, su estado); con varias cuentas conviene
 desfasar la geometría para cubrir más rango. `watchdog.py` vigila todas las
-instancias habilitadas y avisa por Telegram.
+instancias habilitadas y avisa por Telegram: proceso caído, crash-loop, loops
+de re-anclaje, munición agotada y también **salud de estrategia** (escalera
+desanclada del precio). Distingue "el exchange no responde" de "el bot está
+colgado" y avisa cuando se recupera.
+
+**Tests** (sin red, cliente stub): `test_trailing.py` (piso sagrado),
+`test_reconcile.py` (fills reales, lotes fantasma, órdenes duplicadas),
+`test_autosync.py` (absorción de depósitos y umbrales).
 
 **Calibrar antes de operar**: `backtest_accum.py` corre el MISMO código del bot
 contra velas reales con un exchange simulado — cualquier cambio de geometría

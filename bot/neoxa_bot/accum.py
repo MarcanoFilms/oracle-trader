@@ -20,7 +20,7 @@ import time
 
 import requests
 
-from .api import NeoxaError, find_key, find_list
+from .api import NeoxaError, NeoxaUncertain, find_key, find_list
 
 log = logging.getLogger("neoxa_bot")
 
@@ -53,6 +53,22 @@ def _dur(seconds):
     return f"{seconds/86400:.1f}d"
 
 
+def _retry_net(fn, what, wait=10, max_wait=120):
+    """Arranque: un error de RED no debe matar el proceso (neoxa se cuelga a ratos
+    y cada muerte era un reinicio de systemd → alerta de CRASH-LOOP). Reintenta
+    con espera creciente; cualquier otro error del exchange sí se propaga."""
+    while True:
+        try:
+            return fn()
+        except NeoxaError as e:
+            if "error de red" not in str(e) and "HTTP 5" not in str(e):
+                raise
+            log.warning("arranque: %s sin respuesta (%s); reintento en %ds",
+                        what, str(e)[:80], wait)
+            time.sleep(wait)
+            wait = min(wait * 2, max_wait)
+
+
 class AccumBot:
     def __init__(self, cfg, client, state_path="state.json"):
         self.cfg = cfg
@@ -60,7 +76,7 @@ class AccumBot:
         self.state_path = state_path
         self.pair = cfg["pair"]
         self.dry = cfg["dry_run"]
-        info = client.pair_info(self.pair)
+        info = _retry_net(lambda: client.pair_info(self.pair), "info del par")
         if info.get("tradingPaused"):
             raise NeoxaError(f"el par {self.pair} está pausado: {info.get('pauseReason')}")
         self.base, self.quote = info["baseToken"], info["quoteToken"]
@@ -167,6 +183,40 @@ class AccumBot:
         dyn = max(self.state.get("quote_capital_dyn") or 0.0, base)
         return dyn * 0.97 / self.n_levels
 
+    def _sync_capital(self):
+        """Absorbe depósitos: sincroniza el capital de trabajo con el dinero real.
+
+        Capital real = quote libre + escrow en compras + quote invertida en los
+        lotes abiertos (a su costo de compra; un fill parcial vale lo mismo en
+        XBT que el escrow que lo pagó, así que no hay doble conteo). Si supera
+        con claridad el capital dinámico — entró un depósito, o volvió dinero
+        que nunca estuvo presupuestado — la escalera lo absorbe sola: sube
+        quote_capital_dyn y los niveles se re-dimensionan en el siguiente
+        ladder(). Doble umbral (salto absoluto + relativo) para ignorar el
+        goteo del compound, que ya engorda dyn por su lado. Nunca encoge: una
+        retirada la decide y ajusta el operador a mano.
+        """
+        if not self.cfg.get("capital_autosync", True):
+            return
+        invested = sum(l["qty"] * l["buy_price"] for l in self.state["lots"])
+        real = self.usdc_total() + invested
+        base = float(self.cfg["quote_capital"])
+        dyn = max(self.state.get("quote_capital_dyn") or 0.0, base)
+        min_abs = float(self.cfg.get("autosync_min_abs", 0.0001))
+        min_rel = 1 + float(self.cfg.get("autosync_min_rel", 0.02))
+        if real - dyn < min_abs or real < dyn * min_rel:
+            return
+        self.state["quote_capital_dyn"] = real
+        log.info("capital auto-sync: real %.8g %s vs trabajo %.8g → escalera ampliada (V=%.8g)",
+                 real, self.quote, dyn, self.order_value())
+        if self.cfg.get("telegram"):
+            tg_send("\n".join([
+                f"💰 <b>Capital nuevo detectado</b>: {real - dyn:+.8g} {self.quote}",
+                f"Trabajo {dyn:.8g} → <b>{real:.8g}</b> {self.quote} · "
+                f"V {self.order_value():.6g} × nivel",
+                "La escalera se re-dimensiona sola con el dinero nuevo.",
+            ]))
+
     # ---------------- colocación ----------------
     def _submit(self, side, qty, price, post_only=True):
         if self.dry:
@@ -174,10 +224,42 @@ class AccumBot:
             return f"SIM-{self._sim_seq}"
         try:
             resp = self.client.place_limit(self.pair, side, qty, price, post_only=post_only)
+        except NeoxaUncertain as e:
+            # sin respuesta: la orden pudo crearse igual. Buscarla y adoptarla en vez de
+            # reenviar (reenviar dejaba órdenes fantasma fuera del estado)
+            oid = self._find_untracked(side, qty, price)
+            if oid:
+                log.warning("orden %s %.8f @ %.8g sin respuesta pero creada: adopto %s",
+                            side, qty, price, oid)
+                return oid
+            self._last_reject = str(e)
+            log.warning("orden %s %.8f @ %.8g sin respuesta y no aparece: %s",
+                        side, qty, price, str(e)[:160])
+            return None
         except NeoxaError as e:
+            self._last_reject = str(e)
             log.warning("orden %s %.8f @ %.8g rechazada: %s", side, qty, price, str(e)[:160])
             return None
         return find_key(resp, "order_id", "orderId", "id")
+
+    def _find_untracked(self, side, qty, price, tries=3):
+        """Orden activa con este lado/cantidad/precio que el estado aún no rastrea."""
+        tracked = {str(l.get("sell_oid")) for l in self.state["lots"]} | \
+                  {str(b["oid"]) for b in self.state["buys"]}
+        for i in range(tries):
+            time.sleep(2 * (i + 1))
+            try:
+                recs = find_list(self.client.orders("active", limit=500), "orders") or []
+            except NeoxaError:
+                continue
+            for r in recs:
+                oid = str(r.get("order_id"))
+                if (r.get("side") == side and oid not in tracked
+                        and abs(float(r.get("quantity") or 0) - qty) < 1e-8
+                        and abs(float(r.get("price") or 0) - price) < 1e-10):
+                    return oid
+            return None  # el listado respondió y no está: no se creó
+        return None
 
     def _cancel_api(self, oid):
         if self.dry or not oid or str(oid).startswith("SIM-"):
@@ -256,11 +338,17 @@ class AccumBot:
 
     # ---------------- reconciliación (anti-bug: cancelada ≠ ejecutada) ----------------
     def _resolve_missing(self, missing_buys, missing_sells):
-        """Busca órdenes desaparecidas en filled/cancelled y procesa su quantity_filled."""
+        """Busca órdenes desaparecidas en filled/cancelled y procesa su quantity_filled.
+
+        El historial viene ordenado por FECHA DE CREACIÓN (no de ejecución) y no
+        hay consulta por id ni paginación: una venta creada hace días que se llena
+        hoy cae fuera de una ventana corta. Por eso se pide el máximo (500) y, si
+        aun así no aparece, decide el SALDO (ver _settle_unknown_sells).
+        """
         lookup = {}
         for status in ("filled", "cancelled"):
             try:
-                recs = find_list(self.client.orders(status, limit=50), "orders") or []
+                recs = find_list(self.client.orders(status, limit=500), "orders") or []
             except NeoxaError as e:
                 log.warning("no pude leer órdenes %s: %s", status, e)
                 return False
@@ -278,32 +366,80 @@ class AccumBot:
                 self._new_lot(b["price"], qf, b["oid"])
             else:
                 log.info("compra @ %.8g cancelada sin fill", b["price"])
+        unknown = []
         for lot in missing_sells:
             rec = lookup.get(str(lot["sell_oid"]))
             if rec is None:
-                log.warning("venta del lote #%d desapareció sin registro; la recoloco", lot["id"])
-                lot["sell_oid"] = None
+                unknown.append(lot)
                 continue
             qf = float(rec.get("quantity_filled") or 0)
             status = rec.get("status")
+            # precio REAL de ejecución: la orden que cerró puede ser una recolocación
+            # sobre el objetivo (ask corrió) o un cruce de trailing — el registro del
+            # exchange es la verdad. avg_price viene null en makers → price de la
+            # orden; fallback al objetivo si ambos vinieran vacíos.
+            real_px = float(rec.get("avg_price") or rec.get("price") or 0) or lot["sell_price"]
             if status == "filled" or qf >= lot["sell_qty"] - 1e-12:
-                self._close_lot(lot, lot["sell_qty"], lot["sell_price"])
+                self._close_lot(lot, lot["sell_qty"], real_px)
             elif qf > 0:  # cancelada con fill parcial: cerrar lo vendido, recolocar el resto
                 ratio = qf / lot["sell_qty"]
                 sold_part = {"id": lot["id"], "buy_price": lot["buy_price"],
                              "qty": lot["qty"] * ratio, "sell_price": lot["sell_price"],
                              "sell_qty": qf, "sell_oid": lot["sell_oid"], "ts": lot["ts"]}
                 self.state["lots"].append(sold_part)
-                self._close_lot(sold_part, qf, lot["sell_price"])
+                self._close_lot(sold_part, qf, real_px)
                 lot["qty"] -= lot["qty"] * ratio
                 lot["sell_qty"] = round(lot["sell_qty"] - qf, self.qp)
                 lot["sell_oid"] = None
+                lot["tr_hw"] = None  # el resto vuelve a gestión normal (ensure_sells)
             else:
                 log.warning("venta del lote #%d cancelada externamente; la recoloco", lot["id"])
                 lot["sell_oid"] = None
+                lot["tr_hw"] = None  # anti-huérfano: un cruce cancelado no deja el lote colgado
+        if unknown:
+            return self._settle_unknown_sells(unknown)
+        return True
+
+    def _settle_unknown_sells(self, unknown):
+        """Ventas desaparecidas sin registro: ¿se llenaron o las cancelaron?
+
+        Recolocarlas a ciegas (comportamiento previo) vendía XBT del STACK cuando
+        en realidad se habían llenado: lote fantasma → doble cierre, residuo
+        inflado, auto-sync contando el BTC dos veces y lotes nuevos sin XBT con
+        que vender. Lo decide el saldo: XBT libre esperado = reserva + residuo +
+        (qty − sell_qty) de los lotes con venta en escrow + qty de los que no la
+        tienen. Si el XBT del lote sigue libre → cancelada, se recoloca; si falta
+        → se vendió, se cierra al objetivo (piso garantizado; el precio exacto se
+        perdió con el registro).
+        """
+        try:
+            self.refresh_balances()
+        except NeoxaError as e:
+            log.warning("no pude leer saldos para resolver ventas sin registro: %s", e)
+            return False  # quedan con su sell_oid; se reintenta en el próximo ciclo
+        unk = {id(l) for l in unknown}
+        expected = (self.state.get("reserve_xbt") or 0) + self.state["xbt_residue"]
+        for l in self.state["lots"]:
+            escrowed = l.get("sell_oid") and id(l) not in unk
+            expected += l["qty"] - l["sell_qty"] if escrowed else l["qty"]
+        free = self.state["free_xbt"]
+        for lot in unknown:
+            if free >= expected - lot["sell_qty"] / 2:
+                log.warning("venta del lote #%d desapareció sin registro y su XBT sigue libre; "
+                            "la recoloco", lot["id"])
+                lot["sell_oid"] = None
+                lot["tr_hw"] = None
+            else:
+                log.warning("venta del lote #%d desapareció sin registro y su XBT ya no está "
+                            "(libre %.8f, esperado %.8f): se vendió, cierro al objetivo",
+                            lot["id"], free, expected)
+                expected -= lot["sell_qty"]
+                self._close_lot(lot, lot["sell_qty"], lot["sell_price"])
         return True
 
     def reconcile(self):
+        """True si el estado quedó cuadrado con el exchange (sin órdenes pendientes
+        de resolver); el auto-sync de capital solo corre sobre un estado limpio."""
         if self.dry:
             # simulación: compra llena si last <= precio; venta si last >= precio
             for b in list(self.state["buys"]):
@@ -317,28 +453,39 @@ class AccumBot:
                     self.state["free_xbt"] -= lot["sell_qty"]
                     self.state["free_usdc"] += lot["sell_qty"] * lot["sell_price"] * (1 - self.fee)
                     self._close_lot(lot, lot["sell_qty"], lot["sell_price"])
-            return
+            return True
         active_ids = {str(find_key(o, "order_id", "orderId", "id"))
                       for o in (find_list(self.client.orders("active"), "orders") or [])}
         missing_buys = [b for b in self.state["buys"] if str(b["oid"]) not in active_ids]
         missing_sells = [l for l in self.state["lots"]
                          if l.get("sell_oid") and str(l["sell_oid"]) not in active_ids]
         if missing_buys or missing_sells:
-            if self._resolve_missing(missing_buys, missing_sells):
-                self.refresh_balances()
+            if not self._resolve_missing(missing_buys, missing_sells):
+                return False
+            self.refresh_balances()
+        return True
 
     # ---------------- ventas de lotes ----------------
     def ensure_sells(self):
         for lot in self.state["lots"]:
             if lot.get("sell_oid") or lot.get("tr_hw") is not None:
                 continue  # ya tiene orden, o está en gestión de trailing
+            if lot.get("retry_ts", 0) > time.time():
+                continue  # sin saldo hace poco: no martillar el exchange cada tick
             px = lot["sell_price"]
             # si el precio ya corrió por encima del objetivo, vender aún más arriba
             if self.ask and self.ask * 1.0005 > px:
                 px = round(self.ask * 1.0005, self.pp)
             px = max(px, lot["sell_price"])  # I3: jamás bajo costo·(1+paso)
+            self._last_reject = ""
             oid = self._submit("sell", lot["sell_qty"], px)
+            if not oid and "Insufficient" in self._last_reject:
+                # el XBT del lote no está: estado descuadrado con el exchange. Reintento
+                # espaciado (5 min) en vez de ~1/s; el vigía avisa si persiste.
+                lot["retry_ts"] = time.time() + 300
+                continue
             if oid:
+                lot.pop("retry_ts", None)
                 lot["sell_oid"] = oid
                 if self.dry:
                     self.state["free_xbt"] -= 0  # escrow simulado implícito
@@ -419,11 +566,16 @@ class AccumBot:
         targets = [min(t, round(cap, self.pp)) for t in targets]
 
         # re-anclaje: el precio se escapó hacia arriba → recolocar la escalera cerca.
-        # "top" = nivel cubierto más alto entre COMPRAS y LOTES: si hay un lote pegado
-        # al precio, la escalera ya está anclada ahí → NO re-anclar (evita el loop con
-        # el bloqueo de recompra de munición). Cooldown extra como cinturón anti-spam.
+        # "top" = nivel cubierto más alto entre COMPRAS y LOTES CERCANOS: si hay un
+        # lote pegado al precio, la escalera ya está anclada ahí → NO re-anclar
+        # (evita el loop con el bloqueo de recompra). Un lote SUBMARINO lejano
+        # (comprado muy por encima del precio, pre-desplome) NO cubre nada
+        # alcanzable y no debe congelar la escalera abajo: solo cuentan lotes
+        # hasta 1 paso por encima de la referencia. Cooldown como cinturón.
+        near_top = ref * (1 + self.step_pct)
         covered_tops = [b["price"] for b in self.state["buys"]] + \
-                       [l["buy_price"] for l in self.state["lots"]]
+                       [l["buy_price"] for l in self.state["lots"]
+                        if l["buy_price"] <= near_top]
         if self.state["buys"] and covered_tops:
             top = max(covered_tops)
             far = top < ref / (1 + self.step_pct) ** float(self.cfg["reanchor_steps"])
@@ -493,7 +645,16 @@ class AccumBot:
         q = self.quote
         reserve = st.get("reserve_xbt") or 0
         stack = reserve + st["xbt_residue"]
-        growth = (st["xbt_residue"] / reserve * 100) if reserve else 0
+        if reserve:
+            growth_txt = f"+{st['xbt_residue'] / reserve * 100:.0f}% desde inicio"
+        else:
+            # Sin reserva inicial no hay base en XBT (dividir por 0): medir el
+            # stack, valuado en la quote al precio actual, contra el capital de
+            # trabajo inicial.
+            base = float(self.cfg["quote_capital"] or 0)
+            px_now = self.last or 0
+            pct = (stack * px_now / base * 100) if (base and px_now) else 0
+            growth_txt = f"+{pct:.1f}% del capital de trabajo"
         work = max(st.get("quote_capital_dyn") or 0, float(self.cfg["quote_capital"]))
         comp = st.get("compound_harvested") or 0
         days = max((time.time() - st.get("started_ts", time.time())) / 86400, 1e-9)
@@ -510,7 +671,7 @@ class AccumBot:
             "📊 <b>neoxa-bot · resumen</b>",
             "━━━━━━━━━━━━━━━",
             f"♻️ <b>{st['cycles']}</b> ciclos · residuo <b>{st['xbt_residue']:+.8f} XBT</b>",
-            f"📈 stack <b>{stack:.6f} XBT</b> (+{growth:.0f}% desde inicio)",
+            f"📈 stack <b>{stack:.6f} XBT</b> ({growth_txt})",
             f"💰 trabajo {work:.8g} {q}" + (f" · 🌱 +{comp:.6g} compound" if comp else ""),
             f"📦 {len(st['lots'])} lotes abiertos · {len(st['buys'])} compras armadas",
             f"🏷️ precio {px:.8g}{chg}",
@@ -534,7 +695,10 @@ class AccumBot:
             self.state["base_start"] = self.state["free_xbt"]
             self.state["quote_start"] = self.state["free_usdc"]
             self.state["reserve_xbt"] = self.state["free_xbt"]
-        self.reconcile()
+        if self.reconcile():
+            # con órdenes sin resolver (p.ej. el historial no respondió) el escrow de
+            # compras ya canceladas se contaría dos veces → capital fantasma
+            self._sync_capital()
         self.ensure_sells()
         self._manage_trailing()
         self.ladder()
@@ -553,7 +717,7 @@ class AccumBot:
                  self.pair, mode, self.step_pct * 100, self.n_levels,
                  self.order_value(), self.quote)
         if not self.dry:
-            self.refresh_balances()
+            _retry_net(self.refresh_balances, "saldos iniciales")
         if self.cfg.get("telegram"):
             comp = " · compound " + (f"{self.compound*100:.0f}%" if self.compound else "off")
             tg_send("\n".join([

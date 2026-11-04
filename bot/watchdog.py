@@ -29,7 +29,8 @@ CHECK_EVERY = 60          # segundos entre chequeos
 STALE_STATE = 150         # state.json sin refrescar más de esto = bot atascado
 MUTE = {                  # cooldown por tipo de alerta (segundos)
     "bot_down": 600, "bot_stuck": 600, "crashloop": 900, "shadow_down": 1800,
-    "no_ammo_idle": 7200, "trail_loop": 3600, "reanchor_storm": 3600, "recovered": 1,
+    "no_ammo_idle": 7200, "trail_loop": 3600, "reanchor_storm": 3600,
+    "ladder_detached": 3600, "recovered": 1,
 }
 
 
@@ -63,6 +64,13 @@ def load(path, default):
         return json.load(open(path))
     except Exception:
         return default
+
+
+def load_yaml(path):
+    try:
+        return yaml.safe_load(open(path)) or {}
+    except Exception:
+        return {}
 
 
 def _systemctl(args, timeout=10):
@@ -104,7 +112,8 @@ def _label(cfg_path, fallback):
 def targets():
     """Bot principal + instancias con servicio habilitado (auto-descubiertas)."""
     t = [{"name": _label(os.path.join(HERE, "config.yaml"), "principal"),
-          "svc": "neoxa-bot", "state": os.path.join(HERE, "state.json")}]
+          "svc": "neoxa-bot", "state": os.path.join(HERE, "state.json"),
+          "cfg": os.path.join(HERE, "config.yaml")}]
     inst = os.path.join(HERE, "instances")
     if os.path.isdir(inst):
         for n in sorted(os.listdir(inst)):
@@ -114,8 +123,26 @@ def targets():
             svc = f"neoxa-bot@{n}"
             if svc_enabled(svc):
                 t.append({"name": _label(os.path.join(d, "config.yaml"), n),
-                          "svc": svc, "state": os.path.join(d, "state.json")})
+                          "svc": svc, "state": os.path.join(d, "state.json"),
+                          "cfg": os.path.join(d, "config.yaml")})
     return t
+
+
+def ticker_last(pair, _cache={}):
+    """Último precio del ticker público (cache por pasada: TTL 30s)."""
+    now = time.time()
+    hit = _cache.get(pair)
+    if hit and now - hit[0] < 30:
+        return hit[1]
+    try:
+        r = requests.get(f"https://neoxa.exchange/api/exchange/ticker/{pair}",
+                         timeout=10).json()
+        t = r.get("ticker") or r
+        px = float(t.get("lastPrice") or 0) or None
+    except Exception:
+        px = None
+    _cache[pair] = (now, px)
+    return px
 
 
 def main():
@@ -174,11 +201,25 @@ def main():
                 if bot_up and os.path.exists(state_path):
                     age = now - os.path.getmtime(state_path)
                     if age > STALE_STATE:
-                        alert(tn, "bot_stuck", f"🟠 {tag}<b>bot ATASCADO</b> — state.json sin "
-                              f"refrescar hace {age/60:.0f} min (debería ser cada 4s). "
-                              f"Posible cuelgue de red/API.")
+                        # ¿cuelgue del bot o del exchange? el bot loguea cada ciclo
+                        # fallido; si son errores de red, el problema es neoxa
+                        net = journal_since(svc, int(age) + 30).count("error de red")
+                        if net:
+                            msg = (f"🟠 {tag}<b>neoxa.exchange no responde</b> — {net} errores "
+                                   f"de red, sin refrescar hace {age/60:.0f} min. El bot está "
+                                   f"vivo y reintenta solo; te aviso cuando vuelva.")
+                        else:
+                            msg = (f"🟠 {tag}<b>bot ATASCADO</b> — state.json sin refrescar "
+                                   f"hace {age/60:.0f} min (debería ser cada 4s) y sin errores "
+                                   f"de red en el log: posible cuelgue del proceso.")
+                        if alert(tn, "bot_stuck", msg):
+                            wd.setdefault("stuck_since", {}).setdefault(tn, now - age)
                     elif pending(tn, "bot_stuck") and age < 30:
                         clear(tn, "bot_stuck")
+                        since = wd.get("stuck_since", {}).pop(tn, None)
+                        dur = f" tras {(now - since) / 60:.0f} min" if since else ""
+                        alert(tn, "recovered", f"🟢 {tag}bot operando de nuevo{dur} "
+                              f"(state.json refrescando).")
 
                 # 3) crash-loop: error fatal / traceback reciente
                 log5 = journal_since(svc, 300)
@@ -207,8 +248,36 @@ def main():
                           f"{reanchors5} re-anclajes en 5 min (debería ser 0-1). La escalera "
                           f"se cancela/recoloca sin parar. Churn de órdenes; necesita arreglo.")
 
-                # 6) munición agotada + sin actividad prolongada
+                # 6) escalera desanclada — salud de ESTRATEGIA, no solo de proceso
+                # (lección 2026-10-20: la cuenta principal pasó 3h con la 1ª compra a 12.8% del
+                # precio y la vigilancia de proceso lo dio todo por verde). Espeja
+                # la regla de re-anclaje del bot con 1 paso de margen; alerta solo
+                # si persiste 2 pasadas (~2 min) para no pisar su cooldown.
                 st = load(state_path, None)
+                cfg = load_yaml(t["cfg"])
+                px = ticker_last(cfg.get("pair", "BTCB2_BTC")) if cfg else None
+                detached_now = False
+                if st and px and st.get("buys"):
+                    step = float(cfg.get("step_pct", 0.025))
+                    rs = float(cfg.get("reanchor_steps", 1.6))
+                    near = px * (1 + step)
+                    tops = [b["price"] for b in st["buys"]] + \
+                           [l["buy_price"] for l in st.get("lots", [])
+                            if l["buy_price"] <= near]
+                    top = max(tops)
+                    detached_now = top < px / (1 + step) ** (rs + 1.0)
+                    if detached_now and wd.get("detached", {}).get(tn):
+                        gap = (px - top) / px * 100
+                        alert(tn, "ladder_detached",
+                              f"🟠 {tag}<b>Escalera desanclada</b> — la cobertura más "
+                              f"alta está a {gap:.1f}% del precio (el bot re-ancla a "
+                              f"~{(1 - 1 / (1 + step) ** rs) * 100:.1f}%). El re-anclaje "
+                              f"no está actuando; revisar.")
+                    elif not detached_now and pending(tn, "ladder_detached"):
+                        clear(tn, "ladder_detached")
+                wd.setdefault("detached", {})[tn] = detached_now
+
+                # 7) munición agotada + sin actividad prolongada
                 if st:
                     cyc = st.get("cycles")
                     if wd["last_cycles"].get(tn) != cyc:

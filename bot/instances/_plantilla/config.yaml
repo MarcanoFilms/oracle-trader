@@ -8,6 +8,9 @@ label: NOMBRE                # prefijo [NOMBRE] en los avisos de Telegram
 
 # --- capital (por cuenta — medir el balance real antes de arrancar) ---
 quote_capital: 0.0           # BTC de trabajo de esta cuenta
+capital_autosync: true       # absorber depósitos solo: si el capital real (libre+escrow+lotes)
+autosync_min_abs: 0.0001     #   supera el trabajo por este salto en BTC…
+autosync_min_rel: 0.02       #   …y además +2%, la escalera se amplía sola (nunca encoge)
 xbt_reserve: 0.0             # stack intocable de esta cuenta (0 si llega vacía)
 min_lot_value: 0.000005
 max_lots: 30

@@ -8,6 +8,9 @@ label: principal             # prefijo de los avisos de Telegram
 
 # --- capital ---
 quote_capital: 0.0           # BTC de trabajo (medir el balance disponible real)
+capital_autosync: true       # absorber depósitos solo: si el capital real (libre+escrow+lotes)
+autosync_min_abs: 0.0001     #   supera el trabajo por este salto en BTC…
+autosync_min_rel: 0.02       #   …y además +2%, la escalera se amplía sola (nunca encoge)
 xbt_reserve: 0.0             # stack intocable: el bot jamás vende por debajo de esto
 min_lot_value: 0.000005      # umbral de polvo en BTC
 max_lots: 30                 # tope de lotes abiertos (cinturón de seguridad)

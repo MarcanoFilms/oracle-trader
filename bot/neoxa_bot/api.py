@@ -11,12 +11,18 @@ class NeoxaError(Exception):
     pass
 
 
+class NeoxaUncertain(NeoxaError):
+    """La orden pudo haberse creado en el exchange aunque no hubo respuesta
+    (timeout / 5xx en un POST). Quien llama debe buscarla antes de reintentar."""
+
+
 class NeoxaClient:
     """Cliente con rate-limit propio (~500 req/min, bajo el límite de 600)."""
 
-    def __init__(self, api_key=None, api_secret=None, timeout=15):
+    def __init__(self, api_key=None, api_secret=None, timeout=15, read_timeout=6):
         self.s = requests.Session()
-        self.timeout = timeout
+        self.timeout = timeout            # POST de órdenes: una sola oportunidad, sin prisa
+        self.read_timeout = read_timeout  # lecturas: corto y reintento rápido
         self.authed = bool(api_key)
         if api_key:
             self.s.headers.update({"X-API-Key": api_key, "X-API-Secret": api_secret})
@@ -24,20 +30,32 @@ class NeoxaClient:
         self._last = 0.0
         self.min_interval = 0.12
 
-    def _request(self, method, path, **kw):
+    def _request(self, method, path, idempotent=True, **kw):
+        """idempotent=False (crear órdenes): sin reintentos tras error de red o 5xx —
+        el exchange puede haber creado la orden aunque la respuesta no llegara, y
+        reenviarla duplica (caso real 2026-11-02: ventas fantasma y compras dobles)."""
         with self._lock:
             wait = self.min_interval - (time.monotonic() - self._last)
             if wait > 0:
                 time.sleep(wait)
             self._last = time.monotonic()
+        # El servidor de neoxa se cuelga a ratos (TLS ok y la respuesta nunca llega,
+        # ~1 de cada 3 peticiones en las rachas malas) pero el reintento inmediato
+        # casi siempre responde en ~0.2 s. Esperar 15 s × 4 intentos dejaba al bot
+        # minutos sin refrescar (alertas "bot ATASCADO" del vigía, 2026-11-02).
+        tmo = self.timeout if not idempotent else (5, min(self.read_timeout, self.timeout))
         for attempt in range(4):
             try:
-                r = self.s.request(method, BASE + path, timeout=self.timeout, **kw)
+                r = self.s.request(method, BASE + path, timeout=tmo, **kw)
             except requests.RequestException as e:
+                if not idempotent:
+                    raise NeoxaUncertain(f"error de red: {e}")
                 if attempt == 3:
                     raise NeoxaError(f"error de red: {e}")
-                time.sleep(2 ** attempt)
+                time.sleep(0.5 * 2 ** attempt)
                 continue
+            if r.status_code >= 500 and not idempotent:
+                raise NeoxaUncertain(f"HTTP {r.status_code}: {r.text[:200]}")
             if r.status_code == 429 or r.status_code >= 500:
                 if attempt == 3:
                     raise NeoxaError(f"HTTP {r.status_code}: {r.text[:200]}")
@@ -81,7 +99,7 @@ class NeoxaClient:
         body = {"pair": pair, "side": side, "quantity": quantity, "price": price}
         if post_only:
             body["postOnly"] = True
-        return self._request("POST", "/exchange/order", json=body)
+        return self._request("POST", "/exchange/order", idempotent=False, json=body)
 
     def place_market(self, pair, side, quantity=None, total=None, slippage=0.02):
         body = {"pair": pair, "side": side, "type": "market", "slippageTolerance": slippage}
@@ -89,7 +107,7 @@ class NeoxaClient:
             body["quantity"] = quantity
         if total is not None:
             body["total"] = total
-        return self._request("POST", "/exchange/order", json=body)
+        return self._request("POST", "/exchange/order", idempotent=False, json=body)
 
     def cancel_order(self, order_id):
         return self._request("DELETE", f"/exchange/order/{order_id}")
