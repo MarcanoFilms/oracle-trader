@@ -336,6 +336,34 @@ class AccumBot:
             tg_send("\n".join(lines))
             self._maybe_milestone()
 
+    def _close_partial(self, lot, qf, sell_price):
+        """Fill parcial de la venta de un lote: cierra la parte vendida como su
+        propio ciclo y deja el resto del lote (qty y sell_qty proporcionales)."""
+        ratio = qf / lot["sell_qty"]
+        sold_part = {"id": lot["id"], "buy_price": lot["buy_price"],
+                     "qty": lot["qty"] * ratio, "sell_price": lot["sell_price"],
+                     "sell_qty": qf, "sell_oid": lot["sell_oid"], "ts": lot["ts"]}
+        self.state["lots"].append(sold_part)
+        self._close_lot(sold_part, qf, sell_price)
+        lot["qty"] -= lot["qty"] * ratio
+        lot["sell_qty"] = round(lot["sell_qty"] - qf, self.qp)
+
+    def _cancelled_fill(self, oid):
+        """quantity_filled de una orden recién cancelada (None si no aparece o no
+        se pudo leer el historial)."""
+        if self.dry or not oid or str(oid).startswith("SIM-"):
+            return 0.0
+        for status in ("cancelled", "filled"):
+            try:
+                recs = find_list(self.client.orders(status, limit=500), "orders") or []
+            except NeoxaError as e:
+                log.warning("no pude leer órdenes %s: %s", status, e)
+                return None
+            for r in recs:
+                if str(r.get("order_id")) == str(oid):
+                    return float(r.get("quantity_filled") or 0)
+        return None
+
     # ---------------- reconciliación (anti-bug: cancelada ≠ ejecutada) ----------------
     def _resolve_missing(self, missing_buys, missing_sells):
         """Busca órdenes desaparecidas en filled/cancelled y procesa su quantity_filled.
@@ -354,9 +382,17 @@ class AccumBot:
                 return False
             for r in recs:
                 lookup[str(r.get("order_id"))] = r
+        pending = False
         for b in missing_buys:
             rec = lookup.get(str(b["oid"]))
             if rec is None:
+                # el historial tarda en reflejar un fill recién ocurrido: darla por
+                # cancelada al primer vistazo perdió una compra LLENA de la cuenta principal
+                # (2026-11-07, 0.2955 XBT fuera del estado). Esperar antes de soltarla.
+                first = b.setdefault("missing_since", time.time())
+                if time.time() - first < float(self.cfg.get("missing_grace", 300)):
+                    pending = True
+                    continue
                 log.warning("compra %s desapareció sin registro; la doy por cancelada", b["oid"])
                 self.state["buys"].remove(b)
                 continue
@@ -382,14 +418,7 @@ class AccumBot:
             if status == "filled" or qf >= lot["sell_qty"] - 1e-12:
                 self._close_lot(lot, lot["sell_qty"], real_px)
             elif qf > 0:  # cancelada con fill parcial: cerrar lo vendido, recolocar el resto
-                ratio = qf / lot["sell_qty"]
-                sold_part = {"id": lot["id"], "buy_price": lot["buy_price"],
-                             "qty": lot["qty"] * ratio, "sell_price": lot["sell_price"],
-                             "sell_qty": qf, "sell_oid": lot["sell_oid"], "ts": lot["ts"]}
-                self.state["lots"].append(sold_part)
-                self._close_lot(sold_part, qf, real_px)
-                lot["qty"] -= lot["qty"] * ratio
-                lot["sell_qty"] = round(lot["sell_qty"] - qf, self.qp)
+                self._close_partial(lot, qf, real_px)
                 lot["sell_oid"] = None
                 lot["tr_hw"] = None  # el resto vuelve a gestión normal (ensure_sells)
             else:
@@ -397,8 +426,8 @@ class AccumBot:
                 lot["sell_oid"] = None
                 lot["tr_hw"] = None  # anti-huérfano: un cruce cancelado no deja el lote colgado
         if unknown:
-            return self._settle_unknown_sells(unknown)
-        return True
+            return self._settle_unknown_sells(unknown) and not pending
+        return not pending
 
     def _settle_unknown_sells(self, unknown):
         """Ventas desaparecidas sin registro: ¿se llenaron o las cancelaron?
@@ -512,6 +541,18 @@ class AccumBot:
                 # fill de la orden base), para poder dejar correr si hay momentum
                 if lot.get("sell_oid") and bid >= target * (1 - self.trail_activate):
                     self._cancel_api(lot["sell_oid"])
+                    # la orden base pudo llenarse en parte antes del cancel: sin
+                    # contarlo, el trailing vendía el lote ENTERO otra vez (lote
+                    # #227 en producción, 2026-11-09: 0.0746 XBT vendidos de más)
+                    qf = self._cancelled_fill(lot["sell_oid"])
+                    if qf is None or qf >= lot["sell_qty"] - 1e-12:
+                        # fill desconocido o total: lo resuelve reconcile() por el
+                        # camino de siempre (historial o saldo) en el próximo ciclo
+                        continue
+                    if qf > 0:
+                        log.info("trailing: venta base del lote #%d llenó %.8f antes del "
+                                 "cancel; cierro esa parte y sigo con el resto", lot["id"], qf)
+                        self._close_partial(lot, qf, target)
                     lot["sell_oid"] = None
                     lot["tr_hw"] = bid
                     log.info("trailing ▲ lote #%d: bid %.8g cerca de objetivo %.8g, dejo correr",
@@ -611,7 +652,17 @@ class AccumBot:
                 continue  # rango ya cubierto por una compra o un lote abierto
             qty = round(V / t, self.qp)
             cost = qty * t * (1 + self.fee)
-            if qty < self.min_qty or cost > self.state["free_usdc"] - V * 0.005:
+            spare = self.state["free_usdc"] - V * 0.005
+            if cost > spare:
+                # última bala: el remanente no llega a un nivel entero (2026-11-10:
+                # La cuenta principal con 1.00 nivel libre quedó bloqueada por el colchón en un
+                # desplome de −17 %). Si alcanza para last_bullet_frac de V, comprar
+                # con lo que hay en vez de dejarlo ocioso.
+                frac = float(self.cfg.get("last_bullet_frac", 0.5))
+                qty = round(spare / (t * (1 + self.fee)), self.qp) if frac > 0 else 0
+                if qty * t < frac * V:
+                    continue
+            if qty < self.min_qty:
                 continue
             oid = self._submit("buy", qty, t)
             if oid:

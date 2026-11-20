@@ -12,7 +12,8 @@ pasada; deshabilitar el servicio la saca de vigilancia).
 
 Detecta por cuenta: bot caído, atascado (state.json sin refrescar), crash-loop,
 munición agotada sin actividad prolongada, trailing en loop, re-anclajes
-excesivos. Los arreglos de código los hace Claude; esto son los ojos que nunca
+excesivos, y descuadre de XBT entre el exchange y el estado (lectura con la
+API key de la cuenta; solo saldos, jamás órdenes). Los arreglos de código los hace Claude; esto son los ojos que nunca
 duermen.
 """
 import json
@@ -31,7 +32,9 @@ MUTE = {                  # cooldown por tipo de alerta (segundos)
     "bot_down": 600, "bot_stuck": 600, "crashloop": 900, "shadow_down": 1800,
     "no_ammo_idle": 7200, "trail_loop": 3600, "reanchor_storm": 3600,
     "ladder_detached": 3600, "recovered": 1,
+    "xbt_short": 3600, "xbt_surplus": 86400, "sell_starved": 3600,
 }
+BALANCE_EVERY = 900       # cuadre de saldos por cuenta (segundos)
 
 
 def env(path=os.path.join(HERE, ".env")):
@@ -110,10 +113,13 @@ def _label(cfg_path, fallback):
 
 
 def targets():
-    """Bot principal + instancias con servicio habilitado (auto-descubiertas)."""
-    t = [{"name": _label(os.path.join(HERE, "config.yaml"), "principal"),
-          "svc": "neoxa-bot", "state": os.path.join(HERE, "state.json"),
-          "cfg": os.path.join(HERE, "config.yaml")}]
+    """Bot principal + instancias con servicio habilitado (auto-descubiertas).
+    Igual que las instancias: deshabilitar el servicio = pausa, sale de vigilancia."""
+    t = []
+    if svc_enabled("neoxa-bot"):
+        t.append({"name": _label(os.path.join(HERE, "config.yaml"), "principal"),
+                  "svc": "neoxa-bot", "state": os.path.join(HERE, "state.json"),
+                  "cfg": os.path.join(HERE, "config.yaml")})
     inst = os.path.join(HERE, "instances")
     if os.path.isdir(inst):
         for n in sorted(os.listdir(inst)):
@@ -126,6 +132,35 @@ def targets():
                           "svc": svc, "state": os.path.join(d, "state.json"),
                           "cfg": os.path.join(d, "config.yaml")})
     return t
+
+
+def xbt_mismatch(t):
+    """XBT real (libre + en órdenes) menos el que el estado cree tener
+    (reserva + residuo + lotes). None si no se pudo leer."""
+    from neoxa_bot.api import NeoxaClient
+    base = os.path.dirname(t["state"])
+    try:
+        e = env(os.path.join(base, ".env"))
+        cfg = load_yaml(t["cfg"])
+        tok = (cfg.get("pair") or "BTCB2_BTC").split("_")[0]
+        c = NeoxaClient(e["NEOXA_API_KEY"], e["NEOXA_API_SECRET"])
+        b = c.balances()
+        act = c.orders("active", limit=500).get("orders") or []
+        v = (b.get("balances") or {}).get(tok) or {}
+        real = float(v.get("available") or 0) + float(v.get("in_orders") or 0)
+        st = load(t["state"], None)
+        if not st:
+            return None
+        exp = (st.get("reserve_xbt") or 0) + st.get("xbt_residue", 0) + \
+            sum(l["qty"] for l in st.get("lots", []))
+        # venta de lote llenándose en parte (p.ej. un cruce de trailing que quedó
+        # resting): lo ya vendido salió del saldo pero el lote aún no se cierra
+        sells = {str(l.get("sell_oid")) for l in st.get("lots", [])}
+        exp -= sum(float(o.get("quantity_filled") or 0) for o in act
+                   if o.get("side") == "sell" and str(o.get("order_id")) in sells)
+        return real - exp
+    except Exception:
+        return None
 
 
 def ticker_last(pair, _cache={}):
@@ -291,6 +326,42 @@ def main():
                               f"{idle/3600:.1f}h sin ciclos, sin compras activas y con lotes "
                               f"abiertos. Posible munición agotada esperando rebote. "
                               f"Revisar si conviene recargar/ajustar.")
+
+                # 8) descuadre de XBT exchange vs estado (lección 2026-11-10: una cuenta
+                # vendió 0.0746 XBT de más por un fill parcial no contado y pasó >1 día
+                # con la venta de un lote rechazada sin que nadie se enterara). Faltante
+                # = ventas que fallarán; sobrante = XBT que el bot no administra. Solo
+                # alerta si persiste en 2 lecturas (~15 min) con el mismo valor, para
+                # no confundir un fill en vuelo con un descuadre.
+                bal = wd.setdefault("balance", {})
+                b = bal.get(tn) or {}
+                if now - b.get("ts", 0) > BALANCE_EVERY:
+                    diff = xbt_mismatch(t)
+                    if diff is not None:
+                        prev = b.get("diff")
+                        bal[tn] = {"ts": now, "diff": diff}
+                        tol = 1e-6
+                        stable = prev is not None and abs(diff - prev) < tol
+                        if stable and diff < -tol:
+                            alert(tn, "xbt_short", f"🔴 {tag}<b>Faltan {-diff:.8f} XBT</b> — el "
+                                  f"estado cree tener más XBT del que hay en el exchange. Las "
+                                  f"ventas de lotes van a rechazarse. Revisar fills no contados.")
+                        elif stable and diff > tol:
+                            alert(tn, "xbt_surplus", f"🟠 {tag}<b>Sobran {diff:.8f} XBT</b> en el "
+                                  f"exchange que el estado no conoce (¿depósito o compra no "
+                                  f"registrada?). No rompe nada, pero el residuo no es exacto.")
+                        elif abs(diff) <= tol:
+                            clear(tn, "xbt_short")
+                            clear(tn, "xbt_surplus")
+                # 9) venta de lote rechazada por saldo de forma sostenida
+                # solo ventas: las compras de la escalera profunda rechazadas por falta
+                # de BTC (capital comprometido) son normales y NO son descuadre de XBT
+                starved = sum(1 for ln in journal_since(svc, 1800).splitlines()
+                              if "Insufficient" in ln and "orden sell" in ln)
+                if starved >= 4:
+                    alert(tn, "sell_starved", f"🔴 {tag}<b>Venta de lote sin saldo</b> — "
+                          f"{starved} rechazos 'Insufficient balance' en 30 min. El XBT del "
+                          f"lote no está: estado descuadrado con el exchange.")
 
             wd["last_alert"] = last_alert
             json.dump(wd, open(WD_STATE + ".tmp", "w"))

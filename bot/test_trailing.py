@@ -35,6 +35,7 @@ def run_scenario(name, target, bids, expect_capture, min_capture=None):
     bot._submit = lambda side, qty, price, post_only=True: (
         sells.append({"price": price, "taker": not post_only}) or f"OID{len(sells)}")
     bot._cancel_api = lambda oid: None
+    bot._cancelled_fill = lambda oid: 0.0
     for bid in bids:
         bot.bid = float(bid)
         bot._manage_trailing()
@@ -89,6 +90,45 @@ allok &= run_scenario("crash directo",
 allok &= run_scenario("spike +15%",
                       100.0, [99.7, 101, 108, 115, 113, 113.8, 113.0],
                       expect_capture=True, min_capture=113.0)
+
+
+
+def partial_before_cancel():
+    """La orden base llenó en parte antes del cancel: el trailing debe cerrar esa
+    parte y seguir SOLO con el resto (bug lote #227 en producción, 2026-11-09)."""
+    bot = AccumBot(CFG, MockClient(), os.path.join(tempfile.mkdtemp(), "s.json"))
+    bot.state["lots"] = [{"id": 1, "buy_price": 100 / 1.025, "qty": 1.0,
+                          "sell_price": 100.0, "sell_qty": 0.99,
+                          "sell_oid": "BASE", "tr_hw": None, "compound_qty": 0.0,
+                          "ts": 0}]
+    sells = []
+    bot._submit = lambda side, qty, price, post_only=True: (
+        sells.append({"qty": qty, "price": price}) or f"OID{len(sells)}")
+    bot._cancel_api = lambda oid: None
+    bot._cancelled_fill = lambda oid: 0.6
+    for bid in (99.6, 103, 105, 103.9):
+        bot.bid = bid
+        bot._manage_trailing()
+    lots = bot.state["lots"]
+    ok = (bot.state["cycles"] == 1 and len(lots) == 1
+          and abs(lots[0]["sell_qty"] - 0.39) < 1e-9
+          and sells and abs(sells[-1]["qty"] - 0.39) < 1e-9)
+    print(f"  {'✓' if ok else '✗'} fill parcial antes del cancel: ciclo cerrado "
+          f"{bot.state['cycles']}, resto {lots[0]['sell_qty'] if lots else None}, "
+          f"cruce {sells[-1]['qty'] if sells else None}")
+    # fill desconocido → no entra en trailing, deja la orden a reconcile()
+    bot2 = AccumBot(CFG, MockClient(), os.path.join(tempfile.mkdtemp(), "s.json"))
+    bot2.state["lots"] = [dict(bot.state["lots"][0], sell_oid="BASE", tr_hw=None)]
+    bot2._cancel_api = lambda oid: None
+    bot2._cancelled_fill = lambda oid: None
+    bot2.bid = 99.6
+    bot2._manage_trailing()
+    ok2 = bot2.state["lots"][0]["sell_oid"] == "BASE" and bot2.state["lots"][0]["tr_hw"] is None
+    print(f"  {'✓' if ok2 else '✗'} fill desconocido: queda para reconcile()")
+    return ok and ok2
+
+
+allok &= partial_before_cancel()
 
 print("\n" + ("✅ TODOS LOS TESTS PASARON — piso sagrado intacto" if allok
               else "❌ HAY FALLOS — NO desplegar"))

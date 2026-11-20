@@ -236,6 +236,43 @@ except NeoxaUncertain:
     pass
 check("API: POST de orden con timeout → 1 intento y NeoxaUncertain", len(n) == 1)
 
+# 13) compra que desaparece de activas y AÚN no está en el historial (fill recién
+# ocurrido): no se suelta al primer vistazo; si luego aparece llena → lote
+import time as _t
+recs = []
+b = mk_bot(recs, [])
+b.min_lot_value = 5e-6
+buy = {"price": 0.0039, "qty": 0.29, "oid": "B1"}
+b.state["buys"] = [buy]
+ok1 = b._resolve_missing([buy], []) is False and b.state["buys"] == [buy]
+recs.append({"order_id": "B1", "status": "filled", "quantity_filled": 0.29})
+b._resolve_missing([buy], [])
+check("compra sin registro todavía: espera, y al aparecer llena crea el lote",
+      ok1 and not b.state["buys"] and len(b.state["lots"]) == 1)
+# … y si pasado el margen sigue sin registro, se da por cancelada
+b = mk_bot([], [])
+buy = {"price": 0.0039, "qty": 0.29, "oid": "B2", "missing_since": _t.time() - 301}
+b.state["buys"] = [buy]
+b._resolve_missing([buy], [])
+check("compra sin registro tras el margen: se da por cancelada", not b.state["buys"])
+
+# 14) última bala: con ~1 nivel libre (bloqueado por el colchón) compra con lo
+# que hay; con menos de last_bullet_frac·V no compra
+def ladder_bot(free_levels):
+    b = mk_bot([], [])
+    b.cfg = dict(CFG, touch_buffer=0.004, reanchor_steps=1.6)
+    b.last = b.bid = 0.0032
+    V = b.order_value()
+    b.state["free_usdc"] = V * free_levels
+    placed = []
+    b._submit = lambda side, qty, price, post_only=True: placed.append(qty * price) or "X"
+    b.ladder()
+    return V, placed
+V, placed = ladder_bot(1.0)
+check("última bala: 1.00 nivel libre → compra ~V", len(placed) == 1 and 0.9 * V < placed[0] < V)
+V, placed = ladder_bot(0.38)
+check("última bala: 0.38 nivel libre → no compra", placed == [])
+
 print()
 if fails:
     raise SystemExit(f"❌ {fails} test(s) fallaron")

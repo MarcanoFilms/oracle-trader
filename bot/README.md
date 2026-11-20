@@ -53,7 +53,13 @@ Escalera de compras bajo el precio + venta por lote. Sin centro EMA, sin ventas
   se cierran al precio REAL de ejecución (lo que mide el beneficio del
   trailing). Si una orden no aparece en el historial, decide el **saldo**: si el
   XBT del lote sigue libre se recoloca la venta; si falta, se cierra — así un
-  lote nunca se vende dos veces.
+  lote nunca se vende dos veces. Una compra que desaparece de `active` antes de
+  figurar en el historial no se da por cancelada hasta pasar `missing_grace`
+  (300 s), y el fill parcial de una venta base se cuenta antes de cancelarla para
+  el trailing — el lote nunca vende más de lo que tiene.
+- **Última bala** (`last_bullet_frac`): si el remanente de capital no alcanza un
+  nivel completo pero sí esa fracción (0.5 por defecto), compra con lo que queda
+  en vez de dejarlo ocioso durante un desplome.
 - **Resiliencia de red**: lecturas con timeout corto y reintento; los POST de
   órdenes **no** se reintentan a ciegas tras un timeout (el exchange puede
   haberlas creado igual) — el bot busca la orden activa y la adopta, sin
@@ -94,7 +100,10 @@ independiente (su capital, su reserva, su estado); con varias cuentas conviene
 desfasar la geometría para cubrir más rango. `watchdog.py` vigila todas las
 instancias habilitadas y avisa por Telegram: proceso caído, crash-loop, loops
 de re-anclaje, munición agotada y también **salud de estrategia** (escalera
-desanclada del precio). Distingue "el exchange no responde" de "el bot está
+desanclada del precio), **descuadre de XBT** entre el exchange y el estado
+(faltante = ventas que van a fallar; sobrante = XBT sin administrar) y ventas
+rechazadas por saldo. Una cuenta con el servicio deshabilitado se considera en
+pausa y sale de la vigilancia. Distingue "el exchange no responde" de "el bot está
 colgado" y avisa cuando se recupera.
 
 **Tests** (sin red, cliente stub): `test_trailing.py` (piso sagrado),

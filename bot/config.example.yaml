@@ -23,6 +23,8 @@ first_step_pct: 0.015        # 1er escalón más somero: caza retrocesos chicos
 n_buy_levels: 10             # compras simultáneas bajo el precio (~22% de profundidad)
 rebuy_block_frac: 0.5        # no recomprar a <0.5×paso de un lote/compra existente
 reanchor_steps: 1.6          # re-anclar si la mejor compra queda a >1.6 pasos del precio
+last_bullet_frac: 0.5        # comprar con el remanente si llega a 0.5×V (no dejarlo ocioso)
+missing_grace: 300           # s antes de dar por cancelada una compra que no aparece en el historial
 touch_buffer: 0.004          # margen bajo el bid para no cruzar el AMM (post-only)
 
 # --- compound ---
